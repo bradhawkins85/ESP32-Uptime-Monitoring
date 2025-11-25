@@ -52,7 +52,7 @@ Before deploying, you need to configure your WiFi credentials:
 
 ### Connect Your ESP32 Board
 
-1. Connect your ESP32-S3-DevKitC-1 board to your computer using a USB cable
+1. Connect your ESP32 board to your computer using a USB cable (this project is configured for ESP32-S3-DevKitC-1, but other ESP32 boards may work with minor configuration changes)
 2. The board should be automatically detected by your system
 3. On Linux, you may need to add your user to the `dialout` group:
    ```bash
@@ -99,7 +99,7 @@ pio run --target upload && pio device monitor
 
 After uploading, open the serial monitor to view debug information and the IP address of your ESP32:
 
-- **VS Code**: Click "Monitor" in PlatformIO sidebar, or use Ctrl+Alt+S
+- **VS Code**: Click "Monitor" in the PlatformIO sidebar
 - **CLI**: Run `pio device monitor`
 
 The monitor is configured to run at 115200 baud rate.
