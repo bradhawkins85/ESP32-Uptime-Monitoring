@@ -10,3 +10,6 @@ extern const char* NTFY_TOPIC;
 extern const char* NTFY_ACCESS_TOKEN;
 extern const char* NTFY_USERNAME;
 extern const char* NTFY_PASSWORD;
+
+// Discord configuration
+extern const char* DISCORD_WEBHOOK_URL;

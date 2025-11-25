@@ -9,6 +9,7 @@
 //   -DNTFY_ACCESS_TOKEN_VALUE=\"token\"
 //   -DNTFY_USERNAME_VALUE=\"user\"
 //   -DNTFY_PASSWORD_VALUE=\"pass\"
+//   -DDISCORD_WEBHOOK_URL_VALUE=\"https://discord.com/api/webhooks/...\"
 
 #ifndef WIFI_SSID_VALUE
 #define WIFI_SSID_VALUE "xxx"
@@ -38,6 +39,10 @@
 #define NTFY_PASSWORD_VALUE ""
 #endif
 
+#ifndef DISCORD_WEBHOOK_URL_VALUE
+#define DISCORD_WEBHOOK_URL_VALUE ""
+#endif
+
 const char* WIFI_SSID = WIFI_SSID_VALUE;
 const char* WIFI_PASSWORD = WIFI_PASSWORD_VALUE;
 
@@ -46,3 +51,5 @@ const char* NTFY_TOPIC = NTFY_TOPIC_VALUE;
 const char* NTFY_ACCESS_TOKEN = NTFY_ACCESS_TOKEN_VALUE;
 const char* NTFY_USERNAME = NTFY_USERNAME_VALUE;
 const char* NTFY_PASSWORD = NTFY_PASSWORD_VALUE;
+
+const char* DISCORD_WEBHOOK_URL = DISCORD_WEBHOOK_URL_VALUE;

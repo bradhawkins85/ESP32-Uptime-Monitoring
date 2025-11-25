@@ -11,6 +11,7 @@ It serves as a framework to monitor services where support can be hardcoded as a
 - **HTTP GET** requests with expected response validation
 - **Ping** monitoring
 - Optional **ntfy offline notifications** when services go down
+- Optional **Discord webhook notifications** for service up/down events
 - Web-based UI for adding and managing services
 - Persistent storage using LittleFS
 
@@ -70,7 +71,22 @@ Set an ntfy topic to receive alerts whenever a monitored service goes offline. O
    // const char* NTFY_USERNAME = "user";
    // const char* NTFY_PASSWORD = "pass";
    ```
-3. Flash the firmware again. The device will publish a message to the topic whenever it detects that a service transitioned to a down state, and another when the service comes back online.
+   3. Flash the firmware again. The device will publish a message to the topic whenever it detects that a service transitioned to a down state, and another when the service comes back online.
+
+### Enabling Discord notifications
+
+Send alerts to a Discord channel by configuring a webhook URL.
+
+1. Create a webhook in your target Discord channel (Channel Settings → Integrations → Webhooks) and copy the webhook URL.
+2. In `src/config.cpp`, set the webhook value:
+   ```cpp
+   const char* DISCORD_WEBHOOK_URL = "";
+   ```
+   Replace the empty string with your webhook URL. You can also provide this at build time with a PlatformIO flag:
+   ```ini
+   -DDISCORD_WEBHOOK_URL_VALUE=\"https://discord.com/api/webhooks/...\"
+   ```
+3. Rebuild and flash the firmware. A message will be sent to the webhook whenever a service changes state between up and down.
 
 ## Deploying to ESP32
 

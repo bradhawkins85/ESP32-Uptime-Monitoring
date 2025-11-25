@@ -14,7 +14,12 @@ bool isNtfyConfigured() {
   return strlen(NTFY_TOPIC) > 0;
 }
 
+bool isDiscordConfigured() {
+  return strlen(DISCORD_WEBHOOK_URL) > 0;
+}
+
 void sendNtfyNotification(const String& title, const String& message, const String& tags = "warning,monitor");
+void sendDiscordNotification(const String& title, const String& message);
 
 AsyncWebServer server(80);
 
@@ -398,12 +403,12 @@ bool checkPing(Service& service) {
 }
 
 void sendOfflineNotification(const Service& service) {
-  if (!isNtfyConfigured()) {
+  if (!isNtfyConfigured() && !isDiscordConfigured()) {
     return;
   }
 
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Skipping ntfy notification: WiFi not connected");
+    Serial.println("Skipping notifications: WiFi not connected");
     return;
   }
 
@@ -418,16 +423,22 @@ void sendOfflineNotification(const Service& service) {
     message += " Error: " + service.lastError;
   }
 
-  sendNtfyNotification(title, message, "warning,monitor");
+  if (isNtfyConfigured()) {
+    sendNtfyNotification(title, message, "warning,monitor");
+  }
+
+  if (isDiscordConfigured()) {
+    sendDiscordNotification(title, message);
+  }
 }
 
 void sendOnlineNotification(const Service& service) {
-  if (!isNtfyConfigured()) {
+  if (!isNtfyConfigured() && !isDiscordConfigured()) {
     return;
   }
 
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Skipping ntfy notification: WiFi not connected");
+    Serial.println("Skipping notifications: WiFi not connected");
     return;
   }
 
@@ -438,7 +449,13 @@ void sendOnlineNotification(const Service& service) {
   }
   message += " is back online.";
 
-  sendNtfyNotification(title, message, "ok,monitor");
+  if (isNtfyConfigured()) {
+    sendNtfyNotification(title, message, "ok,monitor");
+  }
+
+  if (isDiscordConfigured()) {
+    sendDiscordNotification(title, message);
+  }
 }
 
 void sendNtfyNotification(const String& title, const String& message, const String& tags) {
@@ -469,6 +486,38 @@ void sendNtfyNotification(const String& title, const String& message, const Stri
     Serial.printf("ntfy notification sent: %d\n", httpCode);
   } else {
     Serial.printf("Failed to send ntfy notification: %d\n", httpCode);
+  }
+
+  http.end();
+}
+
+void sendDiscordNotification(const String& title, const String& message) {
+  HTTPClient http;
+  String url = String(DISCORD_WEBHOOK_URL);
+
+  WiFiClientSecure client;
+  bool isSecure = url.startsWith("https://");
+  if (isSecure) {
+    client.setInsecure();
+    http.begin(client, url);
+  } else {
+    http.begin(url);
+  }
+
+  http.addHeader("Content-Type", "application/json");
+
+  JsonDocument doc;
+  doc["content"] = "**" + title + "**\n" + message;
+
+  String payload;
+  serializeJson(doc, payload);
+
+  int httpCode = http.POST(payload);
+
+  if (httpCode > 0) {
+    Serial.printf("Discord notification sent: %d\n", httpCode);
+  } else {
+    Serial.printf("Failed to send Discord notification: %d\n", httpCode);
   }
 
   http.end();
