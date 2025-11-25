@@ -12,6 +12,7 @@ It serves as a framework to monitor services where support can be hardcoded as a
 - **Ping** monitoring
 - Optional **ntfy offline notifications** when services go down
 - Optional **Discord webhook notifications** for service up/down events
+- Optional **SMTP email notifications** for service up/down events
 - Web-based UI for adding and managing services
 - Persistent storage using LittleFS
 
@@ -87,6 +88,32 @@ Send alerts to a Discord channel by configuring a webhook URL.
    -DDISCORD_WEBHOOK_URL_VALUE=\"https://discord.com/api/webhooks/...\"
    ```
 3. Rebuild and flash the firmware. A message will be sent to the webhook whenever a service changes state between up and down.
+
+### Enabling SMTP notifications
+
+Configure an SMTP relay to receive email alerts for uptime changes.
+
+1. In `src/config.cpp`, set your SMTP details:
+   ```cpp
+   const char* SMTP_SERVER = "";
+   const int SMTP_PORT = 587;
+   const bool SMTP_USE_TLS = true;
+   const char* SMTP_USERNAME = "";
+   const char* SMTP_PASSWORD = "";
+   const char* SMTP_FROM_ADDRESS = "";
+   const char* SMTP_TO_ADDRESS = ""; // Comma-separated list is supported
+   ```
+2. For most servers you can provide the same values through PlatformIO build flags instead of editing the file directly:
+   ```ini
+   -DSMTP_SERVER_VALUE=\"smtp.example.com\"
+   -DSMTP_PORT_VALUE=587
+   -DSMTP_USE_TLS_VALUE=true
+   -DSMTP_USERNAME_VALUE=\"user@example.com\"
+   -DSMTP_PASSWORD_VALUE=\"password\"
+   -DSMTP_FROM_ADDRESS_VALUE=\"monitor@example.com\"
+   -DSMTP_TO_ADDRESS_VALUE=\"alerts@example.com\"
+   ```
+3. Rebuild and flash the firmware. The device will send an email whenever a service changes between up and down states. Multiple recipients can be provided as a comma-separated list.
 
 ## Deploying to ESP32
 

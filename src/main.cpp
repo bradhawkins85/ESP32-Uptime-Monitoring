@@ -7,6 +7,7 @@
 #include <LittleFS.h>
 #include <HTTPClient.h>
 #include <ESP32Ping.h>
+#include <mbedtls/base64.h>
 
 #include "config.hpp"
 
@@ -18,8 +19,14 @@ bool isDiscordConfigured() {
   return strlen(DISCORD_WEBHOOK_URL) > 0;
 }
 
+bool isSmtpConfigured() {
+  return strlen(SMTP_SERVER) > 0 && strlen(SMTP_FROM_ADDRESS) > 0 &&
+         strlen(SMTP_TO_ADDRESS) > 0;
+}
+
 void sendNtfyNotification(const String& title, const String& message, const String& tags = "warning,monitor");
 void sendDiscordNotification(const String& title, const String& message);
+void sendSmtpNotification(const String& title, const String& message);
 
 AsyncWebServer server(80);
 
@@ -65,12 +72,16 @@ String generateServiceId();
 void checkServices();
 void sendOfflineNotification(const Service& service);
 void sendOnlineNotification(const Service& service);
+void sendSmtpNotification(const String& title, const String& message);
 bool checkHomeAssistant(Service& service);
 bool checkJellyfin(Service& service);
 bool checkHttpGet(Service& service);
 bool checkPing(Service& service);
 String getWebPage();
 String getServiceTypeString(ServiceType type);
+String base64Encode(const String& input);
+bool readSmtpResponse(WiFiClient& client, int expectedCode);
+bool sendSmtpCommand(WiFiClient& client, const String& command, int expectedCode);
 
 void setup() {
   Serial.begin(115200);
@@ -403,7 +414,7 @@ bool checkPing(Service& service) {
 }
 
 void sendOfflineNotification(const Service& service) {
-  if (!isNtfyConfigured() && !isDiscordConfigured()) {
+  if (!isNtfyConfigured() && !isDiscordConfigured() && !isSmtpConfigured()) {
     return;
   }
 
@@ -430,10 +441,14 @@ void sendOfflineNotification(const Service& service) {
   if (isDiscordConfigured()) {
     sendDiscordNotification(title, message);
   }
+
+  if (isSmtpConfigured()) {
+    sendSmtpNotification(title, message);
+  }
 }
 
 void sendOnlineNotification(const Service& service) {
-  if (!isNtfyConfigured() && !isDiscordConfigured()) {
+  if (!isNtfyConfigured() && !isDiscordConfigured() && !isSmtpConfigured()) {
     return;
   }
 
@@ -455,6 +470,10 @@ void sendOnlineNotification(const Service& service) {
 
   if (isDiscordConfigured()) {
     sendDiscordNotification(title, message);
+  }
+
+  if (isSmtpConfigured()) {
+    sendSmtpNotification(title, message);
   }
 }
 
@@ -521,6 +540,118 @@ void sendDiscordNotification(const String& title, const String& message) {
   }
 
   http.end();
+}
+
+String base64Encode(const String& input) {
+  size_t outputLength = 0;
+  size_t bufferLength = ((input.length() + 2) / 3) * 4 + 4;
+  unsigned char* output = new unsigned char[bufferLength];
+
+  int result = mbedtls_base64_encode(
+    output,
+    bufferLength,
+    &outputLength,
+    reinterpret_cast<const unsigned char*>(input.c_str()),
+    input.length()
+  );
+
+  String encoded = "";
+  if (result == 0) {
+    encoded = String(reinterpret_cast<char*>(output), outputLength);
+  }
+
+  delete[] output;
+  return encoded;
+}
+
+bool readSmtpResponse(WiFiClient& client, int expectedCode) {
+  unsigned long timeout = millis() + 5000;
+  String line;
+  int code = -1;
+
+  do {
+    while (!client.available() && millis() < timeout) {
+      delay(10);
+    }
+
+    if (!client.available()) {
+      Serial.println("SMTP response timeout");
+      return false;
+    }
+
+    line = client.readStringUntil('\n');
+    line.trim();
+    if (line.length() >= 3) {
+      code = line.substring(0, 3).toInt();
+    }
+  } while (line.length() >= 4 && line.charAt(3) == '-');
+
+  if (code != expectedCode) {
+    Serial.printf("SMTP unexpected response (expected %d): %s\n", expectedCode, line.c_str());
+    return false;
+  }
+
+  return true;
+}
+
+bool sendSmtpCommand(WiFiClient& client, const String& command, int expectedCode) {
+  client.println(command);
+  return readSmtpResponse(client, expectedCode);
+}
+
+void sendSmtpNotification(const String& title, const String& message) {
+  WiFiClient plainClient;
+  WiFiClientSecure secureClient;
+  WiFiClient* client = &plainClient;
+
+  if (SMTP_USE_TLS) {
+    secureClient.setInsecure();
+    client = &secureClient;
+  }
+
+  if (!client->connect(SMTP_SERVER, SMTP_PORT)) {
+    Serial.println("Failed to connect to SMTP server");
+    return;
+  }
+
+  if (!readSmtpResponse(*client, 220)) return;
+  if (!sendSmtpCommand(*client, "EHLO esp32-monitor", 250)) return;
+
+  if (strlen(SMTP_USERNAME) > 0) {
+    if (!sendSmtpCommand(*client, "AUTH LOGIN", 334)) return;
+    if (!sendSmtpCommand(*client, base64Encode(SMTP_USERNAME), 334)) return;
+    if (!sendSmtpCommand(*client, base64Encode(SMTP_PASSWORD), 235)) return;
+  }
+
+  if (!sendSmtpCommand(*client, "MAIL FROM:<" + String(SMTP_FROM_ADDRESS) + ">", 250)) return;
+
+  String recipients = String(SMTP_TO_ADDRESS);
+  recipients.replace(" ", "");
+  int start = 0;
+  while (start < recipients.length()) {
+    int commaIndex = recipients.indexOf(',', start);
+    if (commaIndex == -1) commaIndex = recipients.length();
+    String address = recipients.substring(start, commaIndex);
+    if (address.length() > 0) {
+      if (!sendSmtpCommand(*client, "RCPT TO:<" + address + ">", 250)) return;
+    }
+    start = commaIndex + 1;
+  }
+
+  if (!sendSmtpCommand(*client, "DATA", 354)) return;
+
+  client->printf("From: <%s>\r\n", SMTP_FROM_ADDRESS);
+  client->printf("To: %s\r\n", SMTP_TO_ADDRESS);
+  client->printf("Subject: %s\r\n", title.c_str());
+  client->println("Content-Type: text/plain; charset=\"UTF-8\"\r\n");
+  client->println(message);
+  client->println(".");
+
+  if (!readSmtpResponse(*client, 250)) return;
+  sendSmtpCommand(*client, "QUIT", 221);
+  client->stop();
+
+  Serial.println("SMTP notification sent");
 }
 
 void saveServices() {
