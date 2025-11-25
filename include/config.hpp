@@ -13,3 +13,12 @@ extern const char* NTFY_PASSWORD;
 
 // Discord configuration
 extern const char* DISCORD_WEBHOOK_URL;
+
+// SMTP configuration
+extern const char* SMTP_SERVER;
+extern const int SMTP_PORT;
+extern const bool SMTP_USE_TLS;
+extern const char* SMTP_USERNAME;
+extern const char* SMTP_PASSWORD;
+extern const char* SMTP_FROM_ADDRESS;
+extern const char* SMTP_TO_ADDRESS;
