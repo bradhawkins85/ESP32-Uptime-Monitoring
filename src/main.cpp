@@ -290,6 +290,7 @@ void checkServices() {
       continue;
     }
 
+    bool firstCheck = services[i].lastCheck == 0;
     services[i].lastCheck = currentTime;
     bool wasUp = services[i].isUp;
 
@@ -321,7 +322,7 @@ void checkServices() {
 
       if (!services[i].isUp) {
         sendOfflineNotification(services[i]);
-      } else {
+      } else if (!firstCheck) {
         sendOnlineNotification(services[i]);
       }
     }
