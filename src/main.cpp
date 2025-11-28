@@ -443,6 +443,7 @@ bool connectToMeshCore() {
 
     // Retry service discovery to handle cases where MTU negotiation or security may still be completing
     BLERemoteService* service = nullptr;
+    std::map<std::string, BLERemoteService*>* discoveredServices = nullptr;
     for (int retry = 0; retry < BLE_SERVICE_DISCOVERY_RETRIES; retry++) {
       // First try direct UUID lookup
       service = meshClient->getService(MESHCORE_SERVICE_UUID);
@@ -452,10 +453,10 @@ bool connectToMeshCore() {
       }
       
       // If direct lookup fails, try full service discovery and look for our service
-      std::map<std::string, BLERemoteService*>* services = meshClient->getServices();
-      if (services != nullptr && !services->empty()) {
-        Serial.printf("Service discovery attempt %d: found %d service(s):\n", retry + 1, services->size());
-        for (auto& svc : *services) {
+      discoveredServices = meshClient->getServices();
+      if (discoveredServices != nullptr && !discoveredServices->empty()) {
+        Serial.printf("Service discovery attempt %d: found %d service(s):\n", retry + 1, discoveredServices->size());
+        for (auto& svc : *discoveredServices) {
           Serial.printf("  - Service UUID: %s\n", svc.first.c_str());
           // Check if this matches our target service UUID
           if (BLEUUID(svc.first).equals(BLEUUID(MESHCORE_SERVICE_UUID))) {
@@ -477,11 +478,10 @@ bool connectToMeshCore() {
       }
     }
     if (service == nullptr) {
-      // Print all discovered services for debugging
-      std::map<std::string, BLERemoteService*>* services = meshClient->getServices();
-      if (services != nullptr && !services->empty()) {
+      // Print all discovered services for debugging (reuse last discovery result)
+      if (discoveredServices != nullptr && !discoveredServices->empty()) {
         Serial.println("Available services on peer (MeshCore service not among them):");
-        for (auto& svc : *services) {
+        for (auto& svc : *discoveredServices) {
           Serial.printf("  - %s\n", svc.first.c_str());
         }
       }
