@@ -53,15 +53,17 @@ const int BLE_MTU_NEGOTIATION_DELAY_MS = 1500;
 const int BLE_SERVICE_DISCOVERY_RETRIES = 3;
 const int BLE_SERVICE_DISCOVERY_RETRY_DELAY_MS = 500;
 const int BLE_DEINIT_CLEANUP_DELAY_MS = 100; // Allow BLE stack to complete cleanup before deinit
+const int BLE_CLIENT_CLEANUP_DELAY_MS = 100; // Allow BLE stack to complete cleanup when recreating client
 
 // BLE/WiFi coexistence - ESP32-S3 cannot run WiFi and BLE simultaneously
 bool bleOperationInProgress = false;
 bool monitoringPaused = false;
 bool bleInitialized = false;
 
-// UUIDs derived from random generator to avoid collisions
-const char* MESHCORE_SERVICE_UUID = "8b9b0b3d-1e1d-4e91-9c23-4c1e1a4f0a2d";
-const char* MESHCORE_MESSAGE_CHAR_UUID = "0b5ad4e1-a62f-41a8-99a1-86a9b8b43964";
+// Nordic UART Service (NUS) UUIDs - standard BLE UART service used by MeshCore
+const char* MESHCORE_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+// TX Characteristic - used to write data to the peripheral (MeshCore node)
+const char* MESHCORE_MESSAGE_CHAR_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
 
 class MeshClientCallbacks : public BLEClientCallbacks {
   void onConnect(BLEClient* client) override {
@@ -74,6 +76,9 @@ class MeshClientCallbacks : public BLEClientCallbacks {
     meshChannelReady = false;
   }
 };
+
+// Static callback instance to avoid memory leak from repeated allocations
+static MeshClientCallbacks meshClientCallbacks;
 
 // Service types
 // Right now the behavior for each is rudimentary
@@ -385,16 +390,27 @@ bool connectToMeshCore() {
 
     Serial.println("MeshCore peer candidate found, attempting connection...");
 
-    if (meshClient == nullptr) {
-      meshClient = BLEDevice::createClient();
-      meshClient->setClientCallbacks(new MeshClientCallbacks());
-      //meshClient->setConnectTimeout(5000);
+    // Clean up any existing client before creating a new one to avoid "Deregister Failed" errors
+    if (meshClient != nullptr) {
+      if (meshClient->isConnected()) {
+        meshClient->disconnect();
+      }
+      delete meshClient;
+      meshClient = nullptr;
+      delay(BLE_CLIENT_CLEANUP_DELAY_MS);
     }
+
+    meshClient = BLEDevice::createClient();
+    meshClient->setClientCallbacks(&meshClientCallbacks);
 
     // Copy the address so we don't rely on the temporary BLEAdvertisedDevice
     BLEAddress peerAddress = device.getAddress();
 
-    if (!meshClient->connect(peerAddress)) {
+    // Determine address type from the advertised device
+    // MeshCore devices typically use random addresses
+    esp_ble_addr_type_t addrType = device.getAddressType();
+    
+    if (!meshClient->connect(peerAddress, addrType)) {
       lastMeshError = "Connection attempt failed";
       Serial.println("Connection attempt failed");
       continue;
