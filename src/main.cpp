@@ -651,7 +651,7 @@ bool connectToMeshCore() {
         for (auto& svc : *discoveredServices) {
           Serial.printf("  - Service UUID: %s\n", svc.first.c_str());
           // Check if this matches our target service UUID
-          if (BLEUUID(svc.first).equals(BLEUUID(MESHCORE_SERVICE_UUID))) {
+          if (BLEUUID(svc.first).equals(BLEUUID(NUS_SERVICE_UUID))) {
             service = svc.second;
             Serial.println("  ^ Found matching MeshCore service!");
             break;
