@@ -27,6 +27,10 @@ bool isSmtpConfigured() {
          strlen(SMTP_TO_ADDRESS) > 0;
 }
 
+bool isMeshCoreConfigured() {
+  return strlen(BLE_PEER_NAME) > 0;
+}
+
 void sendNtfyNotification(const String& title, const String& message, const String& tags = "warning,monitor");
 void sendDiscordNotification(const String& title, const String& message);
 void sendSmtpNotification(const String& title, const String& message);
@@ -1440,7 +1444,7 @@ bool checkPing(Service& service) {
 }
 
 void sendOfflineNotification(const Service& service) {
-  if (!isNtfyConfigured() && !isDiscordConfigured() && !isSmtpConfigured() && !meshDeviceConnected) {
+  if (!isNtfyConfigured() && !isDiscordConfigured() && !isSmtpConfigured() && !isMeshCoreConfigured()) {
     return;
   }
 
@@ -1477,7 +1481,7 @@ void sendOfflineNotification(const Service& service) {
 }
 
 void sendOnlineNotification(const Service& service) {
-  if (!isNtfyConfigured() && !isDiscordConfigured() && !isSmtpConfigured() && !meshDeviceConnected) {
+  if (!isNtfyConfigured() && !isDiscordConfigured() && !isSmtpConfigured() && !isMeshCoreConfigured()) {
     return;
   }
 
