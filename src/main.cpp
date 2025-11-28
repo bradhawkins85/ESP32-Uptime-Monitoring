@@ -96,6 +96,9 @@ const uint8_t RESP_CODE_SENT = 6;
 const uint8_t RESP_CODE_CHANNEL_INFO = 8;  // 0x08 - Channel information
 const uint8_t RESP_CODE_DEVICE_INFO = 13;
 
+// Maximum number of channels supported by MeshCore
+const uint8_t MAX_MESH_CHANNELS = 8;
+
 // Maximum frame payload size (MeshCore limit is 172 bytes, BLE MTU is typically 185-512 after negotiation)
 const uint16_t MAX_FRAME_PAYLOAD = 172;
 
@@ -836,9 +839,8 @@ bool provisionMeshChannel() {
   
   bool channelFound = false;
   uint8_t queryIndex = 0;
-  const uint8_t MAX_CHANNELS = 8;  // MeshCore typically supports up to 8 channels
   
-  while (queryIndex < MAX_CHANNELS && !channelFound) {
+  while (queryIndex < MAX_MESH_CHANNELS && !channelFound) {
     uint8_t getChannelsCmd[2] = { CMD_GET_CHANNELS, queryIndex };
     
     if (!sendMeshFrame(getChannelsCmd, sizeof(getChannelsCmd))) {
@@ -866,17 +868,12 @@ bool provisionMeshChannel() {
       
       // Extract channel name (starts at offset 2, null-terminated string)
       char channelName[64] = {0};
-      size_t nameLen = meshRxPayloadLen - 2;
+      size_t nameLen = (meshRxPayloadLen > 2) ? meshRxPayloadLen - 2 : 0;
       if (nameLen > sizeof(channelName) - 1) {
         nameLen = sizeof(channelName) - 1;
       }
       memcpy(channelName, meshRxBuffer + 2, nameLen);
       channelName[nameLen] = '\0';
-      
-      // Remove any trailing null bytes from the name
-      for (size_t i = 0; i < nameLen; i++) {
-        if (channelName[i] == '\0') break;
-      }
       
       Serial.printf("Found channel %d: '%s'\n", respChannelIndex, channelName);
       
