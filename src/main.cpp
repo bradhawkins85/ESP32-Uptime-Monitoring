@@ -85,6 +85,7 @@ const char* NUS_RX_CHAR_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";  // Notif
 // MeshCore Companion Radio Protocol Commands
 const uint8_t CMD_APP_START = 1;
 const uint8_t CMD_SEND_CHANNEL_TXT_MSG = 3;
+const uint8_t CMD_GET_CHANNELS = 18;  // 0x12 - Get list of channels
 const uint8_t CMD_DEVICE_QUERY = 22;  // 0x16
 
 // MeshCore Protocol Response Codes
@@ -92,6 +93,7 @@ const uint8_t RESP_CODE_OK = 0;
 const uint8_t RESP_CODE_ERR = 1;
 const uint8_t RESP_CODE_SELF_INFO = 5;
 const uint8_t RESP_CODE_SENT = 6;
+const uint8_t RESP_CODE_CHANNEL_INFO = 8;  // 0x08 - Channel information
 const uint8_t RESP_CODE_DEVICE_INFO = 13;
 
 // Maximum frame payload size (MeshCore limit is 172 bytes, BLE MTU is typically 185-512 after negotiation)
@@ -826,9 +828,75 @@ bool provisionMeshChannel() {
     return false;
   }
 
-  // Assume the channel already exists on the MeshCore device
-  // The channel must be pre-configured on the device before use
-  Serial.printf("Using MeshCore channel '%s' (assumed to exist on device)\n", BLE_MESH_CHANNEL_NAME);
+  // Query the MeshCore device for available channels to find the one matching BLE_MESH_CHANNEL_NAME
+  // CMD_GET_CHANNELS: cmd(1) + starting_index(1)
+  // Start from index 0 and iterate through all channels
+  
+  Serial.printf("Searching for MeshCore channel '%s'...\n", BLE_MESH_CHANNEL_NAME);
+  
+  bool channelFound = false;
+  uint8_t queryIndex = 0;
+  const uint8_t MAX_CHANNELS = 8;  // MeshCore typically supports up to 8 channels
+  
+  while (queryIndex < MAX_CHANNELS && !channelFound) {
+    uint8_t getChannelsCmd[2] = { CMD_GET_CHANNELS, queryIndex };
+    
+    if (!sendMeshFrame(getChannelsCmd, sizeof(getChannelsCmd))) {
+      lastMeshError = "Failed to send CMD_GET_CHANNELS";
+      return false;
+    }
+    
+    if (!waitForMeshResponse(5000)) {
+      // No more channels available
+      Serial.printf("No response for channel index %d, stopping search\n", queryIndex);
+      break;
+    }
+    
+    if (meshLastResponseCode != RESP_CODE_CHANNEL_INFO) {
+      // No more channels or error
+      Serial.printf("Received response code 0x%02X for channel index %d, stopping search\n", 
+                    meshLastResponseCode, queryIndex);
+      break;
+    }
+    
+    // Parse the channel info response
+    // RESP_CODE_CHANNEL_INFO payload: response_code(1) + channel_index(1) + channel_name(variable, null-terminated)
+    if (meshRxPayloadLen >= 3) {
+      uint8_t respChannelIndex = meshRxBuffer[1];
+      
+      // Extract channel name (starts at offset 2, null-terminated string)
+      char channelName[64] = {0};
+      size_t nameLen = meshRxPayloadLen - 2;
+      if (nameLen > sizeof(channelName) - 1) {
+        nameLen = sizeof(channelName) - 1;
+      }
+      memcpy(channelName, meshRxBuffer + 2, nameLen);
+      channelName[nameLen] = '\0';
+      
+      // Remove any trailing null bytes from the name
+      for (size_t i = 0; i < nameLen; i++) {
+        if (channelName[i] == '\0') break;
+      }
+      
+      Serial.printf("Found channel %d: '%s'\n", respChannelIndex, channelName);
+      
+      // Check if this is the channel we're looking for
+      if (strcmp(channelName, BLE_MESH_CHANNEL_NAME) == 0) {
+        meshChannelIndex = respChannelIndex;
+        channelFound = true;
+        Serial.printf("Matched! Using channel index %d for '%s'\n", meshChannelIndex, BLE_MESH_CHANNEL_NAME);
+      }
+    }
+    
+    queryIndex++;
+  }
+  
+  if (!channelFound) {
+    lastMeshError = "Channel '" + String(BLE_MESH_CHANNEL_NAME) + "' not found on device";
+    Serial.println(lastMeshError.c_str());
+    return false;
+  }
+  
   lastMeshError = "";
   return true;
 }
