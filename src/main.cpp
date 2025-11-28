@@ -60,10 +60,10 @@ bool bleOperationInProgress = false;
 bool monitoringPaused = false;
 bool bleInitialized = false;
 
-// Nordic UART Service (NUS) UUIDs - standard BLE UART service used by MeshCore
-const char* MESHCORE_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
-// TX Characteristic - used to write data to the peripheral (MeshCore node)
-const char* MESHCORE_MESSAGE_CHAR_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
+// MeshCore BLE Service UUIDs - used for communication with MeshCore nodes
+const char* MESHCORE_SERVICE_UUID = "0b5ad4e0-a62f-41a8-99a1-86a9b8b43964";
+// Inbox Characteristic - used to write messages to the MeshCore node
+const char* MESHCORE_MESSAGE_CHAR_UUID = "0b5ad4e1-a62f-41a8-99a1-86a9b8b43964";
 
 class MeshClientCallbacks : public BLEClientCallbacks {
   void onConnect(BLEClient* client) override {
