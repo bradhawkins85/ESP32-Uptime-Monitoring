@@ -99,8 +99,21 @@ const uint8_t ERR_CODE_NOT_FOUND = 2;
 const uint8_t FRAME_OUT_MARKER = '<';  // 0x3C - outgoing frames from client
 const uint8_t FRAME_IN_MARKER = '>';   // 0x3E - incoming frames from device
 
-// Maximum frame payload size (MeshCore limit is 172 bytes for USB, similar for BLE)
+// Maximum frame payload size (MeshCore limit is 172 bytes, BLE MTU is typically 185-512 after negotiation)
 const uint16_t MAX_FRAME_PAYLOAD = 172;
+
+// Frame header size (marker + 2-byte length)
+const int FRAME_HEADER_SIZE = 3;
+
+// MeshCore channel configuration sizes
+const size_t MESH_CHANNEL_NAME_SIZE = 32;
+const size_t MESH_CHANNEL_KEY_SIZE = 16;
+
+// Reserved bytes in CMD_APP_START
+const size_t APP_START_RESERVED_SIZE = 6;
+
+// Maximum text message length (conservative for LoRa payload)
+const size_t MAX_TEXT_MESSAGE_LEN = 140;
 
 // RX buffer for accumulating BLE notifications
 const int MESH_RX_BUFFER_SIZE = 256;
@@ -204,8 +217,9 @@ bool sendMeshFrame(const uint8_t* payload, size_t payloadLen) {
   
   // Build frame: '<' + len_lo + len_hi + payload
   // Use stack buffer for typical frame sizes to avoid fragmentation
-  const size_t STACK_BUFFER_SIZE = 180;  // Covers most frames (3 header + up to 177 payload)
-  size_t frameLen = 3 + payloadLen;
+  // STACK_BUFFER_SIZE = FRAME_HEADER_SIZE + MAX_FRAME_PAYLOAD + some margin
+  const size_t STACK_BUFFER_SIZE = FRAME_HEADER_SIZE + MAX_FRAME_PAYLOAD + 8;
+  size_t frameLen = FRAME_HEADER_SIZE + payloadLen;
   
   uint8_t stackBuffer[STACK_BUFFER_SIZE];
   uint8_t* frame = stackBuffer;
@@ -222,7 +236,7 @@ bool sendMeshFrame(const uint8_t* payload, size_t payloadLen) {
   frame[0] = FRAME_OUT_MARKER;
   frame[1] = payloadLen & 0xFF;
   frame[2] = (payloadLen >> 8) & 0xFF;
-  memcpy(frame + 3, payload, payloadLen);
+  memcpy(frame + FRAME_HEADER_SIZE, payload, payloadLen);
   
   Serial.printf("MeshCore TX: cmd 0x%02X, payload length %d\n", payload[0], (int)payloadLen);
   
@@ -796,12 +810,12 @@ bool ensureMeshChannel() {
     // CMD_APP_START payload: version (1), reserved (6), app_name (variable)
     const char* appName = "ESP32-Uptime";
     size_t appNameLen = strlen(appName);
-    size_t cmdLen = 1 + 1 + 6 + appNameLen;
+    size_t cmdLen = 1 + 1 + APP_START_RESERVED_SIZE + appNameLen;
     uint8_t* startCmd = new uint8_t[cmdLen];
     startCmd[0] = CMD_APP_START;
     startCmd[1] = meshProtocolVersion;  // version
-    memset(startCmd + 2, 0, 6);  // reserved bytes
-    memcpy(startCmd + 8, appName, appNameLen);
+    memset(startCmd + 2, 0, APP_START_RESERVED_SIZE);  // reserved bytes
+    memcpy(startCmd + 2 + APP_START_RESERVED_SIZE, appName, appNameLen);
     
     bool sent = sendMeshFrame(startCmd, cmdLen);
     delete[] startCmd;
@@ -863,20 +877,20 @@ bool provisionMeshChannel() {
   // CMD_SET_CHANNEL payload: channel_index (1), name (32 bytes null-padded), key (16 bytes)
   Serial.printf("Setting channel at index %d...\n", meshChannelIndex);
   
-  uint8_t setChannelCmd[1 + 1 + 32 + 16];
+  uint8_t setChannelCmd[1 + 1 + MESH_CHANNEL_NAME_SIZE + MESH_CHANNEL_KEY_SIZE];
   memset(setChannelCmd, 0, sizeof(setChannelCmd));
   setChannelCmd[0] = CMD_SET_CHANNEL;
   setChannelCmd[1] = meshChannelIndex;
   
-  // Copy channel name (up to 32 bytes, null-padded)
+  // Copy channel name (up to MESH_CHANNEL_NAME_SIZE bytes, null-padded)
   size_t nameLen = strlen(BLE_MESH_CHANNEL_NAME);
-  if (nameLen > 32) nameLen = 32;
+  if (nameLen > MESH_CHANNEL_NAME_SIZE) nameLen = MESH_CHANNEL_NAME_SIZE;
   memcpy(setChannelCmd + 2, BLE_MESH_CHANNEL_NAME, nameLen);
   
-  // Copy channel key (up to 16 bytes, null-padded)
+  // Copy channel key (up to MESH_CHANNEL_KEY_SIZE bytes, null-padded)
   size_t keyLen = strlen(BLE_MESH_CHANNEL_KEY);
-  if (keyLen > 16) keyLen = 16;
-  memcpy(setChannelCmd + 34, BLE_MESH_CHANNEL_KEY, keyLen);
+  if (keyLen > MESH_CHANNEL_KEY_SIZE) keyLen = MESH_CHANNEL_KEY_SIZE;
+  memcpy(setChannelCmd + 2 + MESH_CHANNEL_NAME_SIZE, BLE_MESH_CHANNEL_KEY, keyLen);
   
   if (!sendMeshFrame(setChannelCmd, sizeof(setChannelCmd))) {
     lastMeshError = "Failed to send CMD_SET_CHANNEL";
@@ -1562,9 +1576,11 @@ void sendMeshCoreNotification(const String& title, const String& message) {
       // text (variable, UTF-8)
       
       size_t textLen = fullMessage.length();
-      if (textLen > 140) textLen = 140;  // Conservative limit for LoRa payload
+      if (textLen > MAX_TEXT_MESSAGE_LEN) textLen = MAX_TEXT_MESSAGE_LEN;
       
-      size_t cmdLen = 1 + 1 + 1 + 4 + textLen;
+      // CMD_SEND_CHANNEL_TXT_MSG: cmd(1) + txt_type(1) + channel_index(1) + timestamp(4) + text
+      const size_t TIMESTAMP_SIZE = 4;
+      size_t cmdLen = 1 + 1 + 1 + TIMESTAMP_SIZE + textLen;
       uint8_t* sendCmd = new uint8_t[cmdLen];
       
       sendCmd[0] = CMD_SEND_CHANNEL_TXT_MSG;
@@ -1573,7 +1589,7 @@ void sendMeshCoreNotification(const String& title, const String& message) {
       
       // Timestamp - use 0 to indicate "now" to the device, which will use its own clock
       // The MeshCore device typically has a more accurate time source
-      // Alternative: Use NTP time if available before WiFi disconnect
+      // When timestamp is 0, the device substitutes its current time
       uint32_t timestamp = 0;
       sendCmd[3] = timestamp & 0xFF;
       sendCmd[4] = (timestamp >> 8) & 0xFF;
