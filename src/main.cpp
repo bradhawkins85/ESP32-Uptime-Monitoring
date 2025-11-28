@@ -49,9 +49,9 @@ bool meshDeviceConnected = false;
 unsigned long lastMeshConnectAttempt = 0;
 String lastMeshError = "";
 bool meshChannelReady = false;
-const int BLE_MTU_NEGOTIATION_DELAY_MS = 1500;
-const int BLE_SERVICE_DISCOVERY_RETRIES = 3;
-const int BLE_SERVICE_DISCOVERY_RETRY_DELAY_MS = 500;
+const int BLE_MTU_NEGOTIATION_DELAY_MS = 2000;
+const int BLE_SERVICE_DISCOVERY_RETRIES = 5;
+const int BLE_SERVICE_DISCOVERY_RETRY_DELAY_MS = 1000;
 const int BLE_DEINIT_CLEANUP_DELAY_MS = 100; // Allow BLE stack to complete cleanup before deinit
 const int BLE_CLIENT_CLEANUP_DELAY_MS = 100; // Allow BLE stack to complete cleanup when recreating client
 
@@ -438,22 +438,53 @@ bool connectToMeshCore() {
       continue;
     }
 
-    // Allow MTU negotiation to complete before accessing services
+    // Allow MTU negotiation and security handshake to complete before accessing services
     delay(BLE_MTU_NEGOTIATION_DELAY_MS);
 
-    // Retry service discovery to handle cases where MTU negotiation may still be completing
+    // Retry service discovery to handle cases where MTU negotiation or security may still be completing
     BLERemoteService* service = nullptr;
     for (int retry = 0; retry < BLE_SERVICE_DISCOVERY_RETRIES; retry++) {
+      // First try direct UUID lookup
       service = meshClient->getService(MESHCORE_SERVICE_UUID);
       if (service != nullptr) {
+        Serial.printf("Found MeshCore service on attempt %d\n", retry + 1);
         break;
       }
+      
+      // If direct lookup fails, try full service discovery and look for our service
+      std::map<std::string, BLERemoteService*>* services = meshClient->getServices();
+      if (services != nullptr && !services->empty()) {
+        Serial.printf("Service discovery attempt %d: found %d service(s):\n", retry + 1, services->size());
+        for (auto& svc : *services) {
+          Serial.printf("  - Service UUID: %s\n", svc.first.c_str());
+          // Check if this matches our target service UUID
+          if (BLEUUID(svc.first).equals(BLEUUID(MESHCORE_SERVICE_UUID))) {
+            service = svc.second;
+            Serial.println("  ^ Found matching MeshCore service!");
+            break;
+          }
+        }
+        if (service != nullptr) {
+          break;
+        }
+      } else {
+        Serial.printf("Service discovery attempt %d: no services found yet\n", retry + 1);
+      }
+      
       if (retry < BLE_SERVICE_DISCOVERY_RETRIES - 1) {
-        Serial.printf("Service discovery attempt %d failed, retrying...\n", retry + 1);
+        Serial.printf("Retrying service discovery in %d ms...\n", BLE_SERVICE_DISCOVERY_RETRY_DELAY_MS);
         delay(BLE_SERVICE_DISCOVERY_RETRY_DELAY_MS);
       }
     }
     if (service == nullptr) {
+      // Print all discovered services for debugging
+      std::map<std::string, BLERemoteService*>* services = meshClient->getServices();
+      if (services != nullptr && !services->empty()) {
+        Serial.println("Available services on peer (MeshCore service not among them):");
+        for (auto& svc : *services) {
+          Serial.printf("  - %s\n", svc.first.c_str());
+        }
+      }
       lastMeshError = "MeshCore service not found on peer";
       Serial.println("MeshCore service not found on peer, disconnecting...");
       meshClient->disconnect();
