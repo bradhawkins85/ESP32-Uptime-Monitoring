@@ -254,7 +254,8 @@ void scanBLEDevices() {
   Serial.println("========================================");
   
   for (int i = 0; i < deviceCount; i++) {
-    const BLEAdvertisedDevice& device = results.getDevice(i);
+    // make a copy of the advertised device (don't bind to a reference to an internal/temporary object)
+    BLEAdvertisedDevice device = results.getDevice(i);
     
     std::string rawName = device.getName();
     String devName = rawName.length() ? String(rawName.c_str()) : String("(unnamed)");
