@@ -271,7 +271,6 @@ bool connectToMeshCore() {
   BLEScan* scan = BLEDevice::getScan();
   scan->setActiveScan(true);
 
-  // Increase scan duration slightly while debugging
   const int scanSeconds = 10;
   BLEScanResults results = scan->start(scanSeconds, false);
 
@@ -281,43 +280,32 @@ bool connectToMeshCore() {
     BLEAdvertisedDevice device = results.getDevice(i);
 
     // Debug: print what we saw for each advertiser
-    String devName = device.getName().c_str();
-    String devAddr = device.getAddress().toString().c_str();
+    std::string rawName = device.getName();
+    String devName = rawName.length() ? String(rawName.c_str()) : String("");
+    String devAddr = String(device.getAddress().toString().c_str());
     int rssi = device.getRSSI();
     Serial.printf("  [%d] Name='%s' Addr=%s RSSI=%d\n", i, devName.c_str(), devAddr.c_str(), rssi);
 
-    // Print any advertised service UUIDs (if present)
-    std::string svc = device.getServiceUUID().toString();
-    if (svc.length()) {
-      Serial.printf("       Advertised service UUID: %s\n", svc.c_str());
-    } else {
-      // If getServiceUUID unavailable/empty, try listing advertised service UUIDs
-      Serial.print("       No single service UUID string, checking advertised UUIDs...\n");
-      std::vector<BLEUUID> uuids = device.getAdvertisedServiceUUIDs();
-      for (auto &u : uuids) {
-        Serial.printf("         - %s\n", u.toString().c_str());
-      }
+    // Print any advertised single service UUID (if present)
+    bool svcPrinted = false;
+    if (device.haveServiceUUID()) {
+      BLEUUID adv = device.getServiceUUID();
+      Serial.printf("       Advertised service UUID: %s\n", adv.toString().c_str());
+      svcPrinted = true;
+    }
+    if (!svcPrinted) {
+      Serial.println("       No single advertised service UUID available");
     }
 
-    // Improved matching logic:
-    // - If advertised name exactly equals configured name
-    // - Or the advertised name contains the configured name as substring (case-sensitive)
-    // - Or the device advertises the MeshCore service UUID
+    // Matching logic: exact name, substring, or advertised service UUID match
     bool nameMatches = (devName.length() && devName == String(BLE_PEER_NAME));
     bool nameContains = (devName.length() && devName.indexOf(String(BLE_PEER_NAME)) >= 0);
     bool serviceMatches = false;
-    // MESHCORE_SERVICE_UUID is defined elsewhere in the file; use haveServiceUUID if available
+
     if (device.haveServiceUUID()) {
-      serviceMatches = device.haveServiceUUID(MESHCORE_SERVICE_UUID);
-    } else {
-      // fallback: check advertised UUID list
-      std::vector<BLEUUID> uuids = device.getAdvertisedServiceUUIDs();
-      for (auto &u : uuids) {
-        if (u.equals(BLEUUID(MESHCORE_SERVICE_UUID))) {
-          serviceMatches = true;
-          break;
-        }
-      }
+      BLEUUID adv = device.getServiceUUID();
+      // Compare to configured MeshCore UUID (safe regardless of how MESHCORE_SERVICE_UUID is defined)
+      serviceMatches = adv.equals(BLEUUID(MESHCORE_SERVICE_UUID));
     }
 
     if (!(nameMatches || nameContains || serviceMatches)) {
@@ -394,7 +382,6 @@ bool connectToMeshCore() {
   Serial.println(lastMeshError.c_str());
   return false;
 }
-
 void disconnectFromMeshCore() {
   // Clean up the BLE client properly before deinit
   if (meshClient != nullptr) {
