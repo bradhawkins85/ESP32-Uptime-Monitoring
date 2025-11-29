@@ -266,14 +266,6 @@ bool BLECentralTransport::connect() {
 
         std::string rawName = device.getName();
         String devName = rawName.length() ? String(rawName.c_str()) : String("");
-        String devAddr = String(device.getAddress().toString().c_str());
-        int rssi = device.getRSSI();
-        Serial.printf("  [%d] Name='%s' Addr=%s RSSI=%d\n", i, devName.c_str(), devAddr.c_str(), rssi);
-
-        if (device.haveServiceUUID()) {
-            BLEUUID adv = device.getServiceUUID();
-            Serial.printf("       Advertised service UUID: %s\n", adv.toString().c_str());
-        }
 
         // Matching logic
         bool nameMatches = (devName.length() && devName == String(m_config.peerName));
