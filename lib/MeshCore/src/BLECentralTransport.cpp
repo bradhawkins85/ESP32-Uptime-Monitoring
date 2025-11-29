@@ -312,7 +312,23 @@ bool BLECentralTransport::connect() {
             continue;
         }
 
-        delay(m_config.mtuNegotiationDelayMs);
+        // Request a larger MTU to handle MeshCore protocol responses
+        // Channel info responses are ~50 bytes, so we need MTU > 53 (3 byte ATT header + 50)
+        // Request 185 bytes to handle the largest expected responses with margin
+        uint16_t requestedMtu = 185;
+        uint16_t negotiatedMtu = m_client->getMTU();
+        Serial.printf("Initial MTU: %d, requesting MTU: %d\n", negotiatedMtu, requestedMtu);
+        
+        // setMTU() will trigger MTU exchange with the peer
+        if (m_client->setMTU(requestedMtu)) {
+            // Wait for MTU negotiation to complete
+            delay(m_config.mtuNegotiationDelayMs);
+            negotiatedMtu = m_client->getMTU();
+            Serial.printf("MTU negotiated: %d bytes\n", negotiatedMtu);
+        } else {
+            Serial.println("MTU negotiation failed, using default MTU");
+            delay(m_config.mtuNegotiationDelayMs);
+        }
 
         // Service discovery with retries
         BLERemoteService* service = nullptr;
