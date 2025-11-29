@@ -97,7 +97,10 @@ private:
     static void notifyCallback(BLERemoteCharacteristic* pCharacteristic, 
                                uint8_t* pData, size_t length, bool isNotify);
 
-    // Static instance pointer for callbacks (since BLE callbacks are static)
+    // Static instance pointer for callbacks (since BLE library requires static callbacks)
+    // NOTE: This design limits to one active BLECentralTransport instance at a time.
+    // For multi-device scenarios, consider using a callback registry with instance lookup.
+    // For this single-device application, the singleton pattern is acceptable.
     static BLECentralTransport* s_instance;
 
     Config m_config;

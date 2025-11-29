@@ -92,8 +92,11 @@ bool BLECentralTransport::send(const uint8_t* data, size_t len) {
     }
 
     try {
+        // Copy data to non-const buffer as BLE library expects mutable data
+        // This ensures we don't violate the const contract of the interface
+        std::vector<uint8_t> buffer(data, data + len);
         // Use Write With Response for reliable protocol commands
-        m_txCharacteristic->writeValue(const_cast<uint8_t*>(data), len, true);
+        m_txCharacteristic->writeValue(buffer.data(), buffer.size(), true);
         return true;
     } catch (...) {
         Serial.println("BLECentralTransport: write error");

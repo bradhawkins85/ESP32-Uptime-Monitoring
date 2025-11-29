@@ -250,17 +250,20 @@ void initMeshCore() {
   // Initialize and connect
   if (!meshTransport->init()) {
     Serial.println("ERROR: BLE initialization failed");
+    disconnectMeshCore();  // Clean up allocated objects
     return;
   }
   
   if (!meshTransport->connect()) {
     Serial.println("MeshCore connection failed");
+    disconnectMeshCore();  // Clean up allocated objects
     return;
   }
   
   // Start session
   if (!meshProtocol->startSession("ESP32-Uptime")) {
     Serial.println("MeshCore session start failed");
+    disconnectMeshCore();  // Clean up allocated objects
     return;
   }
   
@@ -268,6 +271,7 @@ void initMeshCore() {
   uint8_t channelIdx;
   if (!meshProtocol->findChannelByName(BLE_MESH_CHANNEL_NAME, channelIdx)) {
     Serial.println("Channel not found");
+    disconnectMeshCore();  // Clean up allocated objects
     return;
   }
   

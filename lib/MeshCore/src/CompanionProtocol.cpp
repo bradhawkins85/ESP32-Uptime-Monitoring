@@ -176,12 +176,10 @@ bool CompanionProtocol::startSession(const String& appName) {
         payload.reserve(payloadLen);
         
         payload.push_back(m_protocolVersion);  // version
-        for (size_t i = 0; i < APP_START_RESERVED_SIZE; i++) {
-            payload.push_back(0);  // reserved bytes
-        }
-        for (size_t i = 0; i < appNameLen; i++) {
-            payload.push_back(appName[i]);
-        }
+        // Use insert for reserved bytes (more efficient than push_back loop)
+        payload.insert(payload.end(), APP_START_RESERVED_SIZE, 0);
+        // Use insert for app name (more efficient than push_back loop)
+        payload.insert(payload.end(), appName.begin(), appName.end());
 
         m_responseReceived = false;
         if (!m_codec.sendFrame(CMD_APP_START, payload)) {
@@ -296,15 +294,11 @@ bool CompanionProtocol::sendTextMessageToChannel(uint8_t channelIndex, const Str
     payload.push_back(TXT_TYPE_PLAIN);  // txt_type
     payload.push_back(channelIndex);     // channel_index
     
-    // Timestamp - use 0 to indicate "now"
-    for (size_t i = 0; i < TIMESTAMP_SIZE; i++) {
-        payload.push_back(0);
-    }
+    // Timestamp - use 0 to indicate "now" (more efficient than loop)
+    payload.insert(payload.end(), TIMESTAMP_SIZE, 0);
     
-    // Message text
-    for (size_t i = 0; i < textLen; i++) {
-        payload.push_back(message[i]);
-    }
+    // Message text (use insert for efficiency)
+    payload.insert(payload.end(), message.begin(), message.begin() + textLen);
 
     m_responseReceived = false;
     if (!m_codec.sendFrame(CMD_SEND_CHANNEL_TXT_MSG, payload)) {
@@ -314,8 +308,10 @@ bool CompanionProtocol::sendTextMessageToChannel(uint8_t channelIndex, const Str
 
     // Wait for send confirmation
     if (!waitForResponse(5000)) {
+        // No confirmation received, but frame was sent to BLE layer
+        m_lastError = "No acknowledgment received (message may have been sent)";
         Serial.println("CompanionProtocol: no response for message (may still be sent)");
-        return true;  // Message might still be sent
+        return false;  // Return false to indicate unconfirmed
     }
 
     if (m_lastResponseCode == RESP_CODE_OK || m_lastResponseCode == RESP_CODE_SENT) {
@@ -324,6 +320,7 @@ bool CompanionProtocol::sendTextMessageToChannel(uint8_t channelIndex, const Str
         return true;
     }
 
+    m_lastError = "Unexpected response code";
     Serial.printf("CompanionProtocol: unexpected response 0x%02X\n", m_lastResponseCode);
-    return true;  // Message might still be sent
+    return false;  // Return false for unexpected response
 }
