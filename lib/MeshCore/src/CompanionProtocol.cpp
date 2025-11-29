@@ -25,6 +25,7 @@ constexpr size_t CompanionProtocol::APP_START_RESERVED_SIZE;
 constexpr size_t CompanionProtocol::MAX_TEXT_MESSAGE_LEN;
 constexpr uint8_t CompanionProtocol::MAX_MESH_CHANNELS;
 constexpr size_t CompanionProtocol::MAX_RX_BUFFER_SIZE;
+constexpr uint8_t CompanionProtocol::MAX_KNOWN_RESPONSE_CODE;
 
 CompanionProtocol::CompanionProtocol(BLECentralTransport& transport, FrameCodec& codec)
     : m_transport(transport)
@@ -94,15 +95,15 @@ void CompanionProtocol::onFrame(uint8_t cmd, const uint8_t* payload, size_t payl
     Serial.printf("CompanionProtocol: received frame cmd=0x%02X, len=%d\n", cmd, (int)payloadLen);
     
     // Check if this looks like continuation data for a fragmented response.
-    // MeshCore response codes are in the low range (0x00-0x20). Higher values
-    // are likely the first byte of continuation data from a fragmented BLE response,
-    // not actual command codes.
+    // MeshCore response codes are in the low range (0x00-MAX_KNOWN_RESPONSE_CODE).
+    // Higher values are likely the first byte of continuation data from a fragmented
+    // BLE response, not actual command codes.
     // 
     // When BLE MTU is too small to hold a complete response, the data is split
     // across multiple BLE notifications. The first notification has the valid
     // response code, but subsequent notifications contain raw continuation data
     // where the first byte happens to be interpreted as a "command" by our framing.
-    bool isLikelyContinuation = (cmd > 0x20) && m_expectedResponseCaptured && 
+    bool isLikelyContinuation = (cmd > MAX_KNOWN_RESPONSE_CODE) && m_expectedResponseCaptured && 
                                  (m_capturedBufferLen > 0);
     
     if (isLikelyContinuation) {

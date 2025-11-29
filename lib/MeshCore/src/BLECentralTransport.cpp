@@ -4,6 +4,7 @@
 constexpr const char* BLECentralTransport::NUS_SERVICE_UUID;
 constexpr const char* BLECentralTransport::NUS_TX_CHAR_UUID;
 constexpr const char* BLECentralTransport::NUS_RX_CHAR_UUID;
+constexpr uint16_t BLECentralTransport::PREFERRED_MTU_SIZE;
 
 // Static instance pointer for callbacks
 BLECentralTransport* BLECentralTransport::s_instance = nullptr;
@@ -312,15 +313,13 @@ bool BLECentralTransport::connect() {
             continue;
         }
 
-        // Request a larger MTU to handle MeshCore protocol responses
-        // Channel info responses are ~50 bytes, so we need MTU > 53 (3 byte ATT header + 50)
-        // Request 185 bytes to handle the largest expected responses with margin
-        uint16_t requestedMtu = 185;
+        // Request a larger MTU to handle MeshCore protocol responses.
+        // See PREFERRED_MTU_SIZE documentation for rationale.
         uint16_t negotiatedMtu = m_client->getMTU();
-        Serial.printf("Initial MTU: %d, requesting MTU: %d\n", negotiatedMtu, requestedMtu);
+        Serial.printf("Initial MTU: %d, requesting MTU: %d\n", negotiatedMtu, PREFERRED_MTU_SIZE);
         
         // setMTU() will trigger MTU exchange with the peer
-        if (m_client->setMTU(requestedMtu)) {
+        if (m_client->setMTU(PREFERRED_MTU_SIZE)) {
             // Wait for MTU negotiation to complete
             delay(m_config.mtuNegotiationDelayMs);
             negotiatedMtu = m_client->getMTU();
