@@ -118,13 +118,13 @@ bool BLECentralTransport::init() {
     BLEDevice::setSecurityCallbacks(m_securityCallbacks);
     
     // Configure BLE security for Central role connecting to a secured peripheral
-    // ESP_IO_CAP_KBIO = Keyboard with display (we can input PIN)
+    // ESP_IO_CAP_KBDISP = Keyboard + Display (we can input and display PINs)
     // This allows us to respond to passkey requests from the MeshCore device
     BLEDevice::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT_MITM);
     
     BLESecurity* security = new BLESecurity();
     security->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_MITM_BOND);
-    security->setCapability(ESP_IO_CAP_KBDISP);  // Keyboard + Display capability
+    security->setCapability(ESP_IO_CAP_KBDISP);
     security->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
     security->setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
     
