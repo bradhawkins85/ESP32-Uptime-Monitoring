@@ -155,13 +155,28 @@ public:
     bool waitForResponse(unsigned long timeoutMs = 5000);
 
     /**
-     * Wait for an expected response, ignoring push notifications and other async messages
+     * Wait for an expected response, ignoring push notifications and other async messages.
+     * When a matching response is received, the buffer is captured and preserved
+     * even if subsequent async notifications arrive.
      * @param expectedCode Expected response code to wait for
      * @param altCode Alternative acceptable response code (e.g., RESP_CODE_ERR)
      * @param timeoutMs Timeout in milliseconds
      * @return true if expected response was received
      */
     bool waitForExpectedResponse(uint8_t expectedCode, uint8_t altCode = 0xFF, unsigned long timeoutMs = 5000);
+
+    /**
+     * Get the captured response buffer from the last waitForExpectedResponse call.
+     * This buffer is preserved even if subsequent async notifications arrive.
+     * @return Pointer to captured buffer data
+     */
+    const uint8_t* getCapturedBuffer() const { return m_capturedBuffer; }
+
+    /**
+     * Get the captured response buffer length from the last waitForExpectedResponse call.
+     * @return Length of captured buffer data
+     */
+    size_t getCapturedBufferLen() const { return m_capturedBufferLen; }
 
     /**
      * Get last response code received
@@ -192,6 +207,12 @@ private:
     size_t m_rxPayloadLen = 0;
     volatile bool m_responseReceived = false;
     uint8_t m_lastResponseCode = 0xFF;
+    
+    // Captured response buffer - preserved when waitForExpectedResponse matches
+    // This prevents async notifications from overwriting the response data
+    uint8_t m_capturedBuffer[MAX_RX_BUFFER_SIZE];
+    size_t m_capturedBufferLen = 0;
+    uint8_t m_capturedResponseCode = 0xFF;
     
     // Channel info
     bool m_channelReady = false;

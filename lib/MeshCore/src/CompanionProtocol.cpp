@@ -156,6 +156,10 @@ bool CompanionProtocol::waitForResponse(unsigned long timeoutMs) {
 bool CompanionProtocol::waitForExpectedResponse(uint8_t expectedCode, uint8_t altCode, unsigned long timeoutMs) {
     unsigned long start = millis();
     
+    // Clear captured buffer at start
+    m_capturedBufferLen = 0;
+    m_capturedResponseCode = 0xFF;
+    
     while ((millis() - start) < timeoutMs) {
         if (!m_responseReceived) {
             delay(10);
@@ -165,6 +169,13 @@ bool CompanionProtocol::waitForExpectedResponse(uint8_t expectedCode, uint8_t al
         // Check if we got the expected response
         if (m_lastResponseCode == expectedCode || 
             (altCode != 0xFF && m_lastResponseCode == altCode)) {
+            // Capture the buffer contents immediately to prevent async notifications
+            // from overwriting the data before the caller can process it
+            m_capturedResponseCode = m_lastResponseCode;
+            m_capturedBufferLen = m_rxPayloadLen;
+            if (m_rxPayloadLen > 0 && m_rxPayloadLen <= MAX_RX_BUFFER_SIZE) {
+                memcpy(m_capturedBuffer, m_rxBuffer, m_rxPayloadLen);
+            }
             return true;
         }
         
@@ -176,7 +187,12 @@ bool CompanionProtocol::waitForExpectedResponse(uint8_t expectedCode, uint8_t al
             continue;
         }
         
-        // Got an unexpected (non-push) response - return and let caller handle it
+        // Got an unexpected (non-push) response - capture it and let caller handle it
+        m_capturedResponseCode = m_lastResponseCode;
+        m_capturedBufferLen = m_rxPayloadLen;
+        if (m_rxPayloadLen > 0 && m_rxPayloadLen <= MAX_RX_BUFFER_SIZE) {
+            memcpy(m_capturedBuffer, m_rxBuffer, m_rxPayloadLen);
+        }
         return true;
     }
     
@@ -276,31 +292,34 @@ bool CompanionProtocol::findChannelByName(const String& channelName, uint8_t& ou
         }
 
         // Wait for RESP_CODE_CHANNEL_INFO or RESP_CODE_ERR, ignoring push notifications
+        // The response buffer is captured atomically to prevent async notifications from
+        // overwriting the channel info data before we can parse it.
         if (!waitForExpectedResponse(RESP_CODE_CHANNEL_INFO, RESP_CODE_ERR, 5000)) {
             Serial.printf("No response for channel index %d, stopping search\n", queryIndex);
             break;
         }
 
-        if (m_lastResponseCode == RESP_CODE_ERR) {
+        // Use captured response code and buffer to avoid race condition with async notifications
+        if (m_capturedResponseCode == RESP_CODE_ERR) {
             Serial.printf("Channel index %d not found (RESP_CODE_ERR), stopping search\n", queryIndex);
             break;
         }
 
-        if (m_lastResponseCode != RESP_CODE_CHANNEL_INFO) {
+        if (m_capturedResponseCode != RESP_CODE_CHANNEL_INFO) {
             // Unexpected response that's not a push notification - log and continue to next channel
             Serial.printf("Unexpected response code 0x%02X for channel index %d, continuing search\n", 
-                          m_lastResponseCode, queryIndex);
+                          m_capturedResponseCode, queryIndex);
             continue;
         }
 
-        // Parse channel info response
+        // Parse channel info response from captured buffer
         // RESP_CODE_CHANNEL_INFO payload: response_code(1) + channel_index(1) + name(32) + secret(16)
-        if (m_rxPayloadLen >= 34) {  // resp_code + index + name(32)
-            uint8_t respChannelIndex = m_rxBuffer[1];
+        if (m_capturedBufferLen >= 34) {  // resp_code + index + name(32)
+            uint8_t respChannelIndex = m_capturedBuffer[1];
             
             // Extract channel name (32 bytes at offset 2)
             char foundName[33] = {0};
-            memcpy(foundName, m_rxBuffer + 2, 32);
+            memcpy(foundName, m_capturedBuffer + 2, 32);
             foundName[32] = '\0';
             
             // Trim trailing spaces
@@ -321,6 +340,9 @@ bool CompanionProtocol::findChannelByName(const String& channelName, uint8_t& ou
                 m_lastError = "";
                 return true;
             }
+        } else {
+            Serial.printf("Channel info response too short (%d bytes) for index %d\n", 
+                          (int)m_capturedBufferLen, queryIndex);
         }
     }
 
