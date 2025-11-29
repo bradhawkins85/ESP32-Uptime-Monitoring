@@ -176,14 +176,15 @@ bool CompanionProtocol::waitForResponse(unsigned long timeoutMs) {
 bool CompanionProtocol::waitForExpectedResponse(uint8_t expectedCode, uint8_t altCode, unsigned long timeoutMs) {
     unsigned long start = millis();
     
-    // Clear captured buffer and set up expected response tracking.
-    // This allows onFrame to capture matching responses atomically as they arrive,
-    // preventing race conditions where multiple BLE notifications overwrite each other.
+    // Set up expected response tracking atomically.
+    // Order is critical: first disable capturing, then set expected codes.
+    // This prevents onFrame from capturing with stale expected codes.
+    m_expectedResponseCaptured = false;
     m_capturedBufferLen = 0;
     m_capturedResponseCode = 0xFF;
-    m_expectedCode = expectedCode;
+    // Now set expected codes - onFrame will start matching after both are set
     m_altCode = altCode;
-    m_expectedResponseCaptured = false;
+    m_expectedCode = expectedCode;  // Set this last as it enables matching in onFrame
     
     while ((millis() - start) < timeoutMs) {
         // Check if onFrame has already captured the expected response atomically
