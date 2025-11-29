@@ -303,9 +303,9 @@ bool CompanionProtocol::findChannelByName(const String& channelName, uint8_t& ou
             memcpy(foundName, m_rxBuffer + 2, 32);
             foundName[32] = '\0';
             
-            // Trim trailing spaces and null characters
+            // Trim trailing spaces
             size_t nameLen = strlen(foundName);
-            while (nameLen > 0 && (foundName[nameLen-1] == ' ' || foundName[nameLen-1] == '\0')) {
+            while (nameLen > 0 && foundName[nameLen-1] == ' ') {
                 foundName[--nameLen] = '\0';
             }
 
