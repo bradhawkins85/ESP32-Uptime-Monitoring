@@ -173,7 +173,7 @@ bool CompanionProtocol::waitForExpectedResponse(uint8_t expectedCode, uint8_t al
             // from overwriting the data before the caller can process it
             m_capturedResponseCode = m_lastResponseCode;
             m_capturedBufferLen = m_rxPayloadLen;
-            if (m_rxPayloadLen > 0 && m_rxPayloadLen <= MAX_RX_BUFFER_SIZE) {
+            if (m_rxPayloadLen > 0 && m_rxPayloadLen <= sizeof(m_capturedBuffer)) {
                 memcpy(m_capturedBuffer, m_rxBuffer, m_rxPayloadLen);
             }
             return true;
@@ -190,7 +190,7 @@ bool CompanionProtocol::waitForExpectedResponse(uint8_t expectedCode, uint8_t al
         // Got an unexpected (non-push) response - capture it and let caller handle it
         m_capturedResponseCode = m_lastResponseCode;
         m_capturedBufferLen = m_rxPayloadLen;
-        if (m_rxPayloadLen > 0 && m_rxPayloadLen <= MAX_RX_BUFFER_SIZE) {
+        if (m_rxPayloadLen > 0 && m_rxPayloadLen <= sizeof(m_capturedBuffer)) {
             memcpy(m_capturedBuffer, m_rxBuffer, m_rxPayloadLen);
         }
         return true;
@@ -341,8 +341,8 @@ bool CompanionProtocol::findChannelByName(const String& channelName, uint8_t& ou
                 return true;
             }
         } else {
-            Serial.printf("Channel info response too short (%d bytes) for index %d\n", 
-                          (int)m_capturedBufferLen, queryIndex);
+            Serial.printf("Channel info response too short (%u bytes) for index %d\n", 
+                          (unsigned int)m_capturedBufferLen, queryIndex);
         }
     }
 
