@@ -173,18 +173,24 @@ bool CompanionProtocol::waitForResponse(unsigned long timeoutMs) {
     return m_responseReceived;
 }
 
-bool CompanionProtocol::waitForExpectedResponse(uint8_t expectedCode, uint8_t altCode, unsigned long timeoutMs) {
-    unsigned long start = millis();
-    
-    // Set up expected response tracking atomically.
+void CompanionProtocol::prepareForExpectedResponse(uint8_t expectedCode, uint8_t altCode) {
+    // Set up expected response tracking atomically BEFORE sending the command.
+    // This prevents race conditions where the response arrives before we start waiting.
     // Order is critical: first disable capturing, then set expected codes.
-    // This prevents onFrame from capturing with stale expected codes.
     m_expectedResponseCaptured = false;
     m_capturedBufferLen = 0;
     m_capturedResponseCode = 0xFF;
+    m_responseReceived = false;
     // Now set expected codes - onFrame will start matching after both are set
     m_altCode = altCode;
     m_expectedCode = expectedCode;  // Set this last as it enables matching in onFrame
+}
+
+bool CompanionProtocol::waitForExpectedResponse(unsigned long timeoutMs) {
+    unsigned long start = millis();
+    
+    // Note: prepareForExpectedResponse() must be called BEFORE sending the command
+    // to avoid race conditions where the response arrives before we start waiting.
     
     while ((millis() - start) < timeoutMs) {
         // Check if onFrame has already captured the expected response atomically
@@ -203,9 +209,9 @@ bool CompanionProtocol::waitForExpectedResponse(uint8_t expectedCode, uint8_t al
         }
         
         // Check if we got the expected response (fallback for responses received before
-        // m_expectedCode was set, though this should rarely happen)
-        if (m_lastResponseCode == expectedCode || 
-            (altCode != 0xFF && m_lastResponseCode == altCode)) {
+        // m_expectedCode was set, though this should rarely happen with proper prepare call)
+        if (m_lastResponseCode == m_expectedCode || 
+            (m_altCode != 0xFF && m_lastResponseCode == m_altCode)) {
             // Capture the buffer contents immediately to prevent async notifications
             // from overwriting the data before the caller can process it
             m_capturedResponseCode = m_lastResponseCode;
@@ -222,7 +228,7 @@ bool CompanionProtocol::waitForExpectedResponse(uint8_t expectedCode, uint8_t al
         // If we got a push notification, ignore it and continue waiting
         if (isPushNotification(m_lastResponseCode)) {
             Serial.printf("CompanionProtocol: ignoring push notification 0x%02X while waiting for 0x%02X\n",
-                          m_lastResponseCode, expectedCode);
+                          m_lastResponseCode, m_expectedCode);
             m_responseReceived = false;  // Reset to wait for next response
             continue;
         }
@@ -255,16 +261,19 @@ bool CompanionProtocol::startSession(const String& appName) {
     if (m_state < State::DeviceQueried) {
         Serial.println("CompanionProtocol: Sending CMD_DEVICE_QUERY...");
         
-        m_responseReceived = false;
+        // Set up expected response tracking BEFORE sending the command.
+        // This prevents race conditions where the response arrives before we start waiting.
+        // Accept both RESP_CODE_DEVICE_INFO and RESP_CODE_OK as valid responses.
+        // Different MeshCore firmware versions may respond differently to CMD_DEVICE_QUERY.
+        prepareForExpectedResponse(RESP_CODE_DEVICE_INFO, RESP_CODE_OK);
+        
         uint8_t payload[1] = { m_protocolVersion };
         if (!m_codec.sendFrame(CMD_DEVICE_QUERY, payload, 1)) {
             m_lastError = "Failed to send CMD_DEVICE_QUERY";
             return false;
         }
 
-        // Accept both RESP_CODE_DEVICE_INFO and RESP_CODE_OK as valid responses.
-        // Different MeshCore firmware versions may respond differently to CMD_DEVICE_QUERY.
-        if (!waitForExpectedResponse(RESP_CODE_DEVICE_INFO, RESP_CODE_OK, 5000)) {
+        if (!waitForExpectedResponse(5000)) {
             m_lastError = "Timeout waiting for device query response";
             return false;
         }
@@ -296,13 +305,15 @@ bool CompanionProtocol::startSession(const String& appName) {
         // Use insert for app name (more efficient than push_back loop)
         payload.insert(payload.end(), appName.begin(), appName.end());
 
-        m_responseReceived = false;
+        // Set up expected response tracking BEFORE sending the command
+        prepareForExpectedResponse(RESP_CODE_SELF_INFO);
+        
         if (!m_codec.sendFrame(CMD_APP_START, payload)) {
             m_lastError = "Failed to send CMD_APP_START";
             return false;
         }
 
-        if (!waitForExpectedResponse(RESP_CODE_SELF_INFO, 0xFF, 5000)) {
+        if (!waitForExpectedResponse(5000)) {
             m_lastError = "Timeout waiting for RESP_CODE_SELF_INFO";
             return false;
         }
@@ -333,16 +344,18 @@ bool CompanionProtocol::findChannelByName(const String& channelName, uint8_t& ou
     for (uint8_t queryIndex = 0; queryIndex < MAX_MESH_CHANNELS; queryIndex++) {
         uint8_t payload[1] = { queryIndex };
         
-        m_responseReceived = false;
+        // Set up expected response tracking BEFORE sending the command.
+        // Wait for RESP_CODE_CHANNEL_INFO or RESP_CODE_ERR, ignoring push notifications.
+        // The response buffer is captured atomically to prevent async notifications from
+        // overwriting the channel info data before we can parse it.
+        prepareForExpectedResponse(RESP_CODE_CHANNEL_INFO, RESP_CODE_ERR);
+        
         if (!m_codec.sendFrame(CMD_GET_CHANNEL, payload, 1)) {
             m_lastError = "Failed to send CMD_GET_CHANNEL";
             return false;
         }
 
-        // Wait for RESP_CODE_CHANNEL_INFO or RESP_CODE_ERR, ignoring push notifications
-        // The response buffer is captured atomically to prevent async notifications from
-        // overwriting the channel info data before we can parse it.
-        if (!waitForExpectedResponse(RESP_CODE_CHANNEL_INFO, RESP_CODE_ERR, 5000)) {
+        if (!waitForExpectedResponse(5000)) {
             Serial.printf("No response for channel index %d, stopping search\n", queryIndex);
             break;
         }
@@ -424,15 +437,17 @@ bool CompanionProtocol::sendTextMessageToChannel(uint8_t channelIndex, const Str
     // Message text (use insert for efficiency)
     payload.insert(payload.end(), message.begin(), message.begin() + textLen);
 
-    m_responseReceived = false;
+    // Set up expected response tracking BEFORE sending the command.
+    // Wait for send confirmation, accepting either RESP_CODE_OK or RESP_CODE_SENT
+    // and ignoring any push notifications that might arrive.
+    prepareForExpectedResponse(RESP_CODE_OK, RESP_CODE_SENT);
+    
     if (!m_codec.sendFrame(CMD_SEND_CHANNEL_TXT_MSG, payload)) {
         m_lastError = "Failed to send message";
         return false;
     }
 
-    // Wait for send confirmation, accepting either RESP_CODE_OK or RESP_CODE_SENT
-    // and ignoring any push notifications that might arrive
-    if (!waitForExpectedResponse(RESP_CODE_OK, RESP_CODE_SENT, 5000)) {
+    if (!waitForExpectedResponse(5000)) {
         // No confirmation received, but frame was sent to BLE layer
         m_lastError = "No acknowledgment received (message may have been sent)";
         Serial.println("CompanionProtocol: no response for message (may still be sent)");
