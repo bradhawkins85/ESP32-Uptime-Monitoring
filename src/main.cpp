@@ -35,7 +35,6 @@ void sendNtfyNotification(const String& title, const String& message, const Stri
 void sendDiscordNotification(const String& title, const String& message);
 void sendSmtpNotification(const String& title, const String& message);
 void sendMeshCoreNotification(const String& title, const String& message);
-void scanBLEDevices();
 void initMeshCore();
 void disconnectMeshCore();
 void disconnectWiFi();
@@ -155,11 +154,7 @@ void setup() {
   // Initialize filesystem
   initFileSystem();
 
-  // Scan for BLE devices at boot and log them to serial monitor
-  // This runs before WiFi to avoid ESP32-S3 WiFi/BLE coexistence issues
-  scanBLEDevices();
-
-  // Initialize WiFi (BLE is deinitialized after scan to allow this)
+  // Initialize WiFi
   initWiFi();
 
   // Load saved services
@@ -276,27 +271,6 @@ void initMeshCore() {
   }
   
   Serial.printf("MeshCore ready on channel %d\n", channelIdx);
-}
-
-void scanBLEDevices() {
-  Serial.println("========================================");
-  Serial.println("Starting BLE device scan...");
-  Serial.println("========================================");
-  
-  // Create temporary transport for scanning
-  BLECentralTransport::Config config;
-  config.deviceName = BLE_DEVICE_NAME;
-  config.peerName = BLE_PEER_NAME;
-  config.pairingPin = BLE_PAIRING_PIN;
-  
-  BLECentralTransport scanTransport(config);
-  scanTransport.scanDevices();
-  scanTransport.deinit();
-  
-  Serial.println("========================================");
-  Serial.println("BLE scan complete, BLE deinitialized for WiFi usage");
-  Serial.println("NOTE: BLE will be re-initialized on-demand when sending MeshCore notifications");
-  Serial.println("========================================");
 }
 
 bool ensureAuthenticated(AsyncWebServerRequest* request) {
