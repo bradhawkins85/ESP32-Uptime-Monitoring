@@ -124,12 +124,63 @@ void CompanionProtocol::setMessageCallback(MessageCallback callback) {
     m_messageCallback = std::move(callback);
 }
 
+bool CompanionProtocol::isPushNotification(uint8_t code) const {
+    // Push notifications are asynchronous/unsolicited messages from the device
+    // that should be ignored when waiting for a specific response.
+    // Known push codes from MeshCore protocol:
+    if (code == PUSH_CODE_MSG_WAITING ||   // 14: message waiting to be synced
+        code == PUSH_CODE_SEND_CONFIRMED) {  // 15: send confirmed
+        return true;
+    }
+    
+    // Unknown high-value codes (>= 0x80) are likely device-specific async notifications
+    // or error codes that should be ignored while waiting for a specific response.
+    // Standard MeshCore response codes are all below 0x20.
+    // Code 0xEA (234) has been observed as an async notification during channel queries.
+    if (code >= 0x80) {
+        Serial.printf("CompanionProtocol: treating unknown code 0x%02X as async notification\n", code);
+        return true;
+    }
+    
+    return false;
+}
+
 bool CompanionProtocol::waitForResponse(unsigned long timeoutMs) {
     unsigned long start = millis();
     while (!m_responseReceived && (millis() - start) < timeoutMs) {
         delay(10);
     }
     return m_responseReceived;
+}
+
+bool CompanionProtocol::waitForExpectedResponse(uint8_t expectedCode, uint8_t altCode, unsigned long timeoutMs) {
+    unsigned long start = millis();
+    
+    while ((millis() - start) < timeoutMs) {
+        if (!m_responseReceived) {
+            delay(10);
+            continue;
+        }
+        
+        // Check if we got the expected response
+        if (m_lastResponseCode == expectedCode || 
+            (altCode != 0xFF && m_lastResponseCode == altCode)) {
+            return true;
+        }
+        
+        // If we got a push notification, ignore it and continue waiting
+        if (isPushNotification(m_lastResponseCode)) {
+            Serial.printf("CompanionProtocol: ignoring push notification 0x%02X while waiting for 0x%02X\n",
+                          m_lastResponseCode, expectedCode);
+            m_responseReceived = false;  // Reset to wait for next response
+            continue;
+        }
+        
+        // Got an unexpected (non-push) response - return and let caller handle it
+        return true;
+    }
+    
+    return false;  // Timeout
 }
 
 bool CompanionProtocol::startSession(const String& appName) {
@@ -149,7 +200,7 @@ bool CompanionProtocol::startSession(const String& appName) {
             return false;
         }
 
-        if (!waitForResponse(5000)) {
+        if (!waitForExpectedResponse(RESP_CODE_DEVICE_INFO, 0xFF, 5000)) {
             m_lastError = "Timeout waiting for RESP_CODE_DEVICE_INFO";
             return false;
         }
@@ -187,7 +238,7 @@ bool CompanionProtocol::startSession(const String& appName) {
             return false;
         }
 
-        if (!waitForResponse(5000)) {
+        if (!waitForExpectedResponse(RESP_CODE_SELF_INFO, 0xFF, 5000)) {
             m_lastError = "Timeout waiting for RESP_CODE_SELF_INFO";
             return false;
         }
@@ -224,7 +275,8 @@ bool CompanionProtocol::findChannelByName(const String& channelName, uint8_t& ou
             return false;
         }
 
-        if (!waitForResponse(5000)) {
+        // Wait for RESP_CODE_CHANNEL_INFO or RESP_CODE_ERR, ignoring push notifications
+        if (!waitForExpectedResponse(RESP_CODE_CHANNEL_INFO, RESP_CODE_ERR, 5000)) {
             Serial.printf("No response for channel index %d, stopping search\n", queryIndex);
             break;
         }
@@ -235,9 +287,10 @@ bool CompanionProtocol::findChannelByName(const String& channelName, uint8_t& ou
         }
 
         if (m_lastResponseCode != RESP_CODE_CHANNEL_INFO) {
-            Serial.printf("Unexpected response code 0x%02X for channel index %d\n", 
+            // Unexpected response that's not a push notification - log and continue to next channel
+            Serial.printf("Unexpected response code 0x%02X for channel index %d, continuing search\n", 
                           m_lastResponseCode, queryIndex);
-            break;
+            continue;
         }
 
         // Parse channel info response
@@ -258,7 +311,8 @@ bool CompanionProtocol::findChannelByName(const String& channelName, uint8_t& ou
 
             Serial.printf("Found channel %d: '%s'\n", respChannelIndex, foundName);
 
-            if (String(foundName) == channelName) {
+            // Case-insensitive comparison for channel name matching
+            if (channelName.equalsIgnoreCase(String(foundName))) {
                 outIndex = respChannelIndex;
                 m_channelIndex = respChannelIndex;
                 m_channelReady = true;
@@ -306,8 +360,9 @@ bool CompanionProtocol::sendTextMessageToChannel(uint8_t channelIndex, const Str
         return false;
     }
 
-    // Wait for send confirmation
-    if (!waitForResponse(5000)) {
+    // Wait for send confirmation, accepting either RESP_CODE_OK or RESP_CODE_SENT
+    // and ignoring any push notifications that might arrive
+    if (!waitForExpectedResponse(RESP_CODE_OK, RESP_CODE_SENT, 5000)) {
         // No confirmation received, but frame was sent to BLE layer
         m_lastError = "No acknowledgment received (message may have been sent)";
         Serial.println("CompanionProtocol: no response for message (may still be sent)");

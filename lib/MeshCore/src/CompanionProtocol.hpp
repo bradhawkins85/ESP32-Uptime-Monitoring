@@ -155,6 +155,15 @@ public:
     bool waitForResponse(unsigned long timeoutMs = 5000);
 
     /**
+     * Wait for an expected response, ignoring push notifications and other async messages
+     * @param expectedCode Expected response code to wait for
+     * @param altCode Alternative acceptable response code (e.g., RESP_CODE_ERR)
+     * @param timeoutMs Timeout in milliseconds
+     * @return true if expected response was received
+     */
+    bool waitForExpectedResponse(uint8_t expectedCode, uint8_t altCode = 0xFF, unsigned long timeoutMs = 5000);
+
+    /**
      * Get last response code received
      * @return Last response code
      */
@@ -163,6 +172,13 @@ public:
 private:
     void onFrame(uint8_t cmd, const uint8_t* payload, size_t payloadLen);
     void setState(State newState);
+    
+    /**
+     * Check if a response code is a push notification (asynchronous/unsolicited)
+     * @param code Response code to check
+     * @return true if code is a push notification
+     */
+    bool isPushNotification(uint8_t code) const;
 
     BLECentralTransport& m_transport;
     FrameCodec& m_codec;
