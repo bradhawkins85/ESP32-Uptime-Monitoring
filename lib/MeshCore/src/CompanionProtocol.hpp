@@ -158,15 +158,22 @@ public:
     bool waitForResponse(unsigned long timeoutMs = 5000);
 
     /**
-     * Wait for an expected response, ignoring push notifications and other async messages.
-     * When a matching response is received, the buffer is captured and preserved
-     * even if subsequent async notifications arrive.
+     * Prepare to receive an expected response. Must be called BEFORE sending the command
+     * to avoid race conditions where the response arrives before we start waiting.
      * @param expectedCode Expected response code to wait for
      * @param altCode Alternative acceptable response code (e.g., RESP_CODE_ERR)
+     */
+    void prepareForExpectedResponse(uint8_t expectedCode, uint8_t altCode = 0xFF);
+
+    /**
+     * Wait for an expected response that was set up with prepareForExpectedResponse().
+     * Ignores push notifications and other async messages.
+     * When a matching response is received, the buffer is captured and preserved
+     * even if subsequent async notifications arrive.
      * @param timeoutMs Timeout in milliseconds
      * @return true if expected response was received
      */
-    bool waitForExpectedResponse(uint8_t expectedCode, uint8_t altCode = 0xFF, unsigned long timeoutMs = 5000);
+    bool waitForExpectedResponse(unsigned long timeoutMs = 5000);
 
     /**
      * Get the captured response buffer from the last waitForExpectedResponse call.
