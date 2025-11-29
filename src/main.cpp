@@ -66,6 +66,13 @@ bool bleOperationInProgress = false;
 bool monitoringPaused = false;
 bool bleInitialized = false;
 
+// Pending MeshCore notification - used to defer BLE operations from HTTP handlers
+// This prevents task watchdog timeouts by allowing the async web server to complete
+// HTTP response delivery before WiFi is disconnected for BLE operations.
+volatile bool pendingMeshNotification = false;
+String pendingMeshTitle = "";
+String pendingMeshMessage = "";
+
 // MeshCore protocol state
 enum MeshCoreState {
   MESH_STATE_DISCONNECTED = 0,
@@ -299,6 +306,26 @@ void setup() {
 void loop() {
   static unsigned long lastCheckTime = 0;
   unsigned long currentTime = millis();
+
+  // Process pending MeshCore notifications from HTTP handlers
+  // This runs in the main loop to avoid blocking the async web server
+  // and prevents task watchdog timeouts from WiFi/BLE switching during HTTP responses
+  if (pendingMeshNotification && !bleOperationInProgress) {
+    // Copy values and clear flag atomically to prevent race conditions with HTTP handler.
+    // The HTTP handler checks both pendingMeshNotification and bleOperationInProgress
+    // before writing, so setting the flag false first prevents new writes.
+    // We use noInterrupts()/interrupts() to ensure the copy is atomic since
+    // the async web server runs in a separate FreeRTOS task.
+    noInterrupts();
+    pendingMeshNotification = false;
+    String title = pendingMeshTitle;
+    String message = pendingMeshMessage;
+    pendingMeshTitle = "";
+    pendingMeshMessage = "";
+    interrupts();
+    
+    sendMeshCoreNotification(title, message);
+  }
 
   // Skip service checks if monitoring is paused (e.g., during BLE operations)
   if (monitoringPaused) {
@@ -919,6 +946,7 @@ void initWebServer() {
     doc["protocolState"] = (int)meshProtocolState;
     doc["lastError"] = lastMeshError;
     doc["bleOperationInProgress"] = bleOperationInProgress;
+    doc["pendingNotification"] = (bool)pendingMeshNotification;
     doc["monitoringPaused"] = monitoringPaused;
 
     String response;
@@ -932,8 +960,8 @@ void initWebServer() {
         return;
       }
 
-      // Check if a BLE operation is already in progress
-      if (bleOperationInProgress) {
+      // Check if a BLE operation is already in progress or queued
+      if (bleOperationInProgress || pendingMeshNotification) {
         request->send(503, "application/json", "{\"error\":\"BLE operation already in progress\"}");
         return;
       }
@@ -951,14 +979,20 @@ void initWebServer() {
         return;
       }
 
-      // Note: sendMeshCoreNotification handles WiFi/BLE switching internally
-      // The response is sent before the operation completes because the async
-      // web server would timeout during the WiFi/BLE switch.
-      // The actual sending happens synchronously after the response.
-      request->send(202, "application/json", "{\"success\":true,\"status\":\"queued\"}");
+      // Queue the notification to be processed in the main loop.
+      // This prevents task watchdog timeouts by allowing the async web server
+      // to fully complete HTTP response delivery before WiFi is disconnected
+      // for BLE operations. The ESP32-S3 cannot run WiFi and BLE simultaneously,
+      // so we must ensure the HTTP response is sent before switching to BLE.
+      // Use noInterrupts()/interrupts() to ensure atomic write since the main
+      // loop() reads these variables from a different FreeRTOS task context.
+      noInterrupts();
+      pendingMeshTitle = title;
+      pendingMeshMessage = message;
+      pendingMeshNotification = true;
+      interrupts();
       
-      // Send the notification (this blocks while doing WiFi/BLE switch)
-      sendMeshCoreNotification(title, message);
+      request->send(202, "application/json", "{\"success\":true,\"status\":\"queued\"}");
     }
   );
 
