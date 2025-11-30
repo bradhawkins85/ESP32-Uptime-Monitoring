@@ -1,4 +1,8 @@
 #include "BLECentralTransport.hpp"
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 // Define static constexpr members for pre-C++17 ODR compliance
 constexpr const char* BLECentralTransport::NUS_SERVICE_UUID;
@@ -138,7 +142,7 @@ void BLECentralTransport::deinit() {
     disconnect();
     
     if (m_bleInitialized) {
-        delay(m_config.deinitCleanupDelayMs);
+        vTaskDelay(pdMS_TO_TICKS(m_config.deinitCleanupDelayMs));
         BLEDevice::deinit();
         m_bleInitialized = false;
         Serial.println("BLE deinitialized");
@@ -154,19 +158,8 @@ bool BLECentralTransport::send(const uint8_t* data, size_t len) {
         // Copy data to non-const buffer as BLE library expects mutable data
         // This ensures we don't violate the const contract of the interface
         std::vector<uint8_t> buffer(data, data + len);
-        // Use Write With Response mode for reliable protocol commands.
-        // Note: writeValue() is blocking and waits for acknowledgment.
+        // Use Write With Response for reliable protocol commands
         m_txCharacteristic->writeValue(buffer.data(), buffer.size(), true);
-        
-        // Yield to allow watchdog timer to be fed and other tasks to run.
-        // The BLE write operation can block for significant time waiting for
-        // acknowledgment, which can trigger the Interrupt Watchdog on ESP32.
-        yield();
-        
-        // Brief delay after write to allow BLE stack to complete processing.
-        // This helps prevent watchdog timeout from BLE stack callback chains.
-        delay(5);
-        
         return true;
     } catch (...) {
         Serial.println("BLECentralTransport: write error");
@@ -301,7 +294,7 @@ bool BLECentralTransport::connect() {
             }
             delete m_client;
             m_client = nullptr;
-            delay(m_config.clientCleanupDelayMs);
+            vTaskDelay(pdMS_TO_TICKS(m_config.clientCleanupDelayMs));
         }
 
         m_client = BLEDevice::createClient();
@@ -324,12 +317,12 @@ bool BLECentralTransport::connect() {
         // setMTU() will trigger MTU exchange with the peer
         if (m_client->setMTU(PREFERRED_MTU_SIZE)) {
             // Wait for MTU negotiation to complete
-            delay(m_config.mtuNegotiationDelayMs);
+            vTaskDelay(pdMS_TO_TICKS(m_config.mtuNegotiationDelayMs));
             negotiatedMtu = m_client->getMTU();
             Serial.printf("MTU negotiated: %d bytes\n", negotiatedMtu);
         } else {
             Serial.println("MTU negotiation failed, using default MTU");
-            delay(m_config.mtuNegotiationDelayMs);
+            vTaskDelay(pdMS_TO_TICKS(m_config.mtuNegotiationDelayMs));
         }
 
         // Service discovery with retries
@@ -355,7 +348,7 @@ bool BLECentralTransport::connect() {
             }
 
             if (retry < m_config.serviceDiscoveryRetries - 1) {
-                delay(m_config.serviceDiscoveryRetryDelayMs);
+                vTaskDelay(pdMS_TO_TICKS(m_config.serviceDiscoveryRetryDelayMs));
             }
         }
 
@@ -402,7 +395,7 @@ bool BLECentralTransport::connect() {
         }
         
         // Wait for notification registration to complete
-        delay(m_config.notifyRegistrationDelayMs);
+        vTaskDelay(pdMS_TO_TICKS(m_config.notifyRegistrationDelayMs));
 
         m_txCharacteristic = txChar;
         m_rxCharacteristic = rxChar;
