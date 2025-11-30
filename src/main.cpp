@@ -91,8 +91,6 @@ int getMeshProtocolState() {
 // Right now the behavior for each is rudimentary
 // However, you can use this to expand and add services with more complex checks
 enum ServiceType {
-  TYPE_HOME_ASSISTANT,
-  TYPE_JELLYFIN,
   TYPE_HTTP_GET,
   TYPE_PING
 };
@@ -164,8 +162,6 @@ void checkServices();
 void sendOfflineNotification(const Service& service);
 void sendOnlineNotification(const Service& service);
 void sendSmtpNotification(const String& title, const String& message);
-bool checkHomeAssistant(Service& service);
-bool checkJellyfin(Service& service);
 bool checkHttpGet(Service& service);
 bool checkPing(Service& service);
 String getWebPage();
@@ -556,11 +552,7 @@ void initWebServer() {
       newService.name = doc["name"].as<String>();
 
       String typeStr = doc["type"].as<String>();
-      if (typeStr == "home_assistant") {
-        newService.type = TYPE_HOME_ASSISTANT;
-      } else if (typeStr == "jellyfin") {
-        newService.type = TYPE_JELLYFIN;
-      } else if (typeStr == "http_get") {
+      if (typeStr == "http_get") {
         newService.type = TYPE_HTTP_GET;
       } else if (typeStr == "ping") {
         newService.type = TYPE_PING;
@@ -712,11 +704,7 @@ void initWebServer() {
 
         String typeStr = obj["type"].as<String>();
         ServiceType type;
-        if (typeStr == "home_assistant") {
-          type = TYPE_HOME_ASSISTANT;
-        } else if (typeStr == "jellyfin") {
-          type = TYPE_JELLYFIN;
-        } else if (typeStr == "http_get") {
+        if (typeStr == "http_get") {
           type = TYPE_HTTP_GET;
         } else if (typeStr == "ping") {
           type = TYPE_PING;
@@ -803,12 +791,6 @@ void checkServices() {
     // Perform the actual check
     bool checkResult = false;
     switch (services[i].type) {
-      case TYPE_HOME_ASSISTANT:
-        checkResult = checkHomeAssistant(services[i]);
-        break;
-      case TYPE_JELLYFIN:
-        checkResult = checkJellyfin(services[i]);
-        break;
       case TYPE_HTTP_GET:
         checkResult = checkHttpGet(services[i]);
         break;
@@ -864,51 +846,6 @@ void checkServices() {
       }
     }
   }
-}
-
-// technically just detectes any endpoint, so would be good to support auth and check if it's actually home assistant
-// could parse /api/states or something to check there are valid entities and that it's actually HA
-bool checkHomeAssistant(Service& service) {
-  HTTPClient http;
-  String url = "http://" + service.host + ":" + String(service.port) + "/api/";
-
-  http.begin(url);
-  http.setTimeout(5000);
-
-  int httpCode = http.GET();
-  bool isUp = false;
-
-  if (httpCode > 0) {
-      // HA returns 404 for /api/, but ANY positive HTTP status means the service is alive
-      isUp = true;
-  } else {
-      service.lastError = "Connection failed: " + String(httpCode);
-  }
-
-  http.end();
-  return isUp;
-}
-
-bool checkJellyfin(Service& service) {
-  HTTPClient http;
-  String url = "http://" + service.host + ":" + String(service.port) + "/health";
-
-  http.begin(url);
-  http.setTimeout(5000);
-
-  int httpCode = http.GET();
-  bool isUp = false;
-
-  if (httpCode > 0) {
-    if (httpCode == 200) {
-      isUp = true;
-    }
-  } else {
-    service.lastError = "Connection failed: " + String(httpCode);
-  }
-
-  http.end();
-  return isUp;
 }
 
 bool checkHttpGet(Service& service) {
@@ -1854,8 +1791,6 @@ void loadServices() {
 
 String getServiceTypeString(ServiceType type) {
   switch (type) {
-    case TYPE_HOME_ASSISTANT: return "home_assistant";
-    case TYPE_JELLYFIN: return "jellyfin";
     case TYPE_HTTP_GET: return "http_get";
     case TYPE_PING: return "ping";
     default: return "unknown";
@@ -2179,8 +2114,6 @@ String getWebPage() {
                     <div class="form-group">
                         <label for="serviceType">Service Type</label>
                         <select id="serviceType" required>
-                            <option value="home_assistant">Home Assistant</option>
-                            <option value="jellyfin">Jellyfin</option>
                             <option value="http_get">HTTP GET</option>
                             <option value="ping">Ping</option>
                         </select>
@@ -2265,15 +2198,8 @@ String getWebPage() {
                     responseGroup.classList.add('hidden');
                 }
 
-                // Set default ports
-                // Big benefit of the defined types is we can set defaults like these
-                if (type === 'home_assistant') {
-                    portInput.value = 8123;
-                } else if (type === 'jellyfin') {
-                    portInput.value = 8096;
-                } else {
-                    portInput.value = 80;
-                }
+                // Set default port
+                portInput.value = 80;
             }
         });
 

@@ -6,8 +6,6 @@ It serves as a framework to monitor services where support can be hardcoded as a
 
 ## Features
 
-- **Home Assistant** monitoring
-- **Jellyfin** server monitoring
 - **HTTP GET** requests with expected response validation
 - **Ping** monitoring
 - **Pass/Fail Thresholds** - Configure how many consecutive successes or failures are required before changing a service's status and sending notifications
