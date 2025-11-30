@@ -5,6 +5,8 @@
 #include <Arduino.h>
 #include <array>
 #include <functional>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 /**
  * CompanionProtocol - MeshCore Companion Radio Protocol implementation
