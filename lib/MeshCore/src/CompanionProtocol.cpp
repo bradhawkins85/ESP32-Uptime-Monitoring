@@ -500,12 +500,24 @@ bool CompanionProtocol::sendTextMessageToChannel(uint8_t channelIndex, const Str
         // the initial acknowledgment can leave the remote node in an inconsistent
         // state, requiring a reboot to receive subsequent messages.
         //
+        // Timing note: PUSH_CODE_SEND_CONFIRMED is sent by the remote node after
+        // it has processed and transmitted the message (e.g., over radio). This
+        // typically takes longer than the initial acknowledgment, so it should
+        // arrive after we start this second wait. If in rare cases it arrives
+        // during the first wait, it would be treated as a push notification and
+        // ignored - the timeout below handles this gracefully.
+        //
         // Use prepareForExpectedResponse/waitForExpectedResponse to properly handle
         // the response tracking state and avoid race conditions with onFrame().
-        prepareForExpectedResponse(PUSH_CODE_SEND_CONFIRMED);
+        // Accept RESP_CODE_ERR as an alternative to handle error cases.
+        prepareForExpectedResponse(PUSH_CODE_SEND_CONFIRMED, RESP_CODE_ERR);
         
         if (waitForExpectedResponse(SEND_CONFIRMATION_TIMEOUT_MS)) {
-            Serial.println("CompanionProtocol: send confirmed by remote node");
+            if (m_lastResponseCode == PUSH_CODE_SEND_CONFIRMED) {
+                Serial.println("CompanionProtocol: send confirmed by remote node");
+            } else if (m_lastResponseCode == RESP_CODE_ERR) {
+                Serial.println("CompanionProtocol: remote node reported error processing message");
+            }
         } else {
             // Timeout waiting for confirmation. The message was acknowledged, so it
             // may still be delivered. Log a warning but return success to allow the
