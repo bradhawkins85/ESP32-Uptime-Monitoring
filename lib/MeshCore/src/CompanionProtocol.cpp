@@ -205,7 +205,8 @@ bool CompanionProtocol::isPushNotification(uint8_t code) const {
 bool CompanionProtocol::waitForResponse(unsigned long timeoutMs) {
     unsigned long start = millis();
     while (!m_responseReceived && (millis() - start) < timeoutMs) {
-        delay(10);
+        // Feed watchdog and yield to prevent task watchdog timeout
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
     return m_responseReceived;
 }
@@ -241,7 +242,8 @@ bool CompanionProtocol::waitForExpectedResponse(unsigned long timeoutMs) {
         }
         
         if (!m_responseReceived) {
-            delay(10);
+            // Feed watchdog and yield to prevent task watchdog timeout
+            vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
         
