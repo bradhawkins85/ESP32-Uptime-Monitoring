@@ -2198,7 +2198,7 @@ String getWebPage() {
                     responseGroup.classList.add('hidden');
                 }
 
-                // Set default port
+                // Set default port for HTTP-based service types
                 portInput.value = 80;
             }
         });
