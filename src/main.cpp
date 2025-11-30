@@ -314,10 +314,12 @@ void initWiFi() {
     Serial.println(WiFi.localIP());
     
     // Synchronize time via NTP - required for MeshCore message timestamps
+    // Uses UTC (gmtOffset=0, daylightOffset=0) for consistent Unix timestamps
     Serial.println("Synchronizing time via NTP...");
     configTime(0, 0, "pool.ntp.org", "time.nist.gov");
     
     // Wait for time to be set (with timeout)
+    // Blocking is acceptable here since web server hasn't started yet
     time_t now = 0;
     int ntpAttempts = 0;
     while (now < MIN_VALID_TIMESTAMP && ntpAttempts < 10) {
