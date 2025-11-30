@@ -53,6 +53,11 @@ public:
     static constexpr uint8_t MAX_MESH_CHANNELS = 16;
     static constexpr size_t MAX_RX_BUFFER_SIZE = 256;
     
+    // Timeout in milliseconds to wait for PUSH_CODE_SEND_CONFIRMED after
+    // receiving the initial message acknowledgment. This ensures the remote
+    // node has fully processed the message before disconnecting.
+    static constexpr unsigned long SEND_CONFIRMATION_TIMEOUT_MS = 3000;
+    
     // Maximum known MeshCore response/command code value.
     // Used to detect fragmented BLE responses where raw continuation data
     // is incorrectly interpreted as a command byte. All valid MeshCore

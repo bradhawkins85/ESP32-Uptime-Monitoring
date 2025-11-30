@@ -25,6 +25,7 @@ constexpr size_t CompanionProtocol::APP_START_RESERVED_SIZE;
 constexpr size_t CompanionProtocol::MAX_TEXT_MESSAGE_LEN;
 constexpr uint8_t CompanionProtocol::MAX_MESH_CHANNELS;
 constexpr size_t CompanionProtocol::MAX_RX_BUFFER_SIZE;
+constexpr unsigned long CompanionProtocol::SEND_CONFIRMATION_TIMEOUT_MS;
 constexpr uint8_t CompanionProtocol::MAX_KNOWN_RESPONSE_CODE;
 
 CompanionProtocol::CompanionProtocol(BLECentralTransport& transport, FrameCodec& codec)
@@ -492,7 +493,27 @@ bool CompanionProtocol::sendTextMessageToChannel(uint8_t channelIndex, const Str
     }
 
     if (m_lastResponseCode == RESP_CODE_OK || m_lastResponseCode == RESP_CODE_SENT) {
-        Serial.println("CompanionProtocol: message sent successfully");
+        Serial.println("CompanionProtocol: message acknowledged, waiting for send confirmation...");
+        
+        // Wait for PUSH_CODE_SEND_CONFIRMED to ensure the remote node has fully
+        // processed the message. Without this wait, disconnecting immediately after
+        // the initial acknowledgment can leave the remote node in an inconsistent
+        // state, requiring a reboot to receive subsequent messages.
+        //
+        // Use prepareForExpectedResponse/waitForExpectedResponse to properly handle
+        // the response tracking state and avoid race conditions with onFrame().
+        prepareForExpectedResponse(PUSH_CODE_SEND_CONFIRMED);
+        
+        if (waitForExpectedResponse(SEND_CONFIRMATION_TIMEOUT_MS)) {
+            Serial.println("CompanionProtocol: send confirmed by remote node");
+        } else {
+            // Timeout waiting for confirmation. The message was acknowledged, so it
+            // may still be delivered. Log a warning but return success to allow the
+            // caller to proceed. If the remote node is in an inconsistent state,
+            // subsequent messages may fail until the node is restarted.
+            Serial.println("CompanionProtocol: send confirmation not received (timeout), message may still be delivered");
+        }
+        
         m_lastError = "";
         return true;
     }
