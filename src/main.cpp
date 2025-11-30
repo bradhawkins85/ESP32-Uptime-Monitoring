@@ -10,6 +10,7 @@
 #include <mbedtls/base64.h>
 #include <WiFiUdp.h>
 #include <Arduino_SNMP_Manager.h>
+#include <regex.h>
 
 // MeshCore layered protocol implementation
 #include "MeshCore.hpp"
@@ -183,6 +184,7 @@ void sendSmtpNotification(const String& title, const String& message);
 bool checkHttpGet(Service& service);
 bool checkPing(Service& service);
 bool checkSnmpGet(Service& service);
+bool matchesRegex(const String& text, const String& pattern);
 String getWebPage();
 String getServiceTypeString(ServiceType type);
 String getSnmpCompareOpString(SnmpCompareOp op);
@@ -899,6 +901,26 @@ void checkServices() {
   }
 }
 
+// Helper function to match text against a POSIX extended regex pattern
+bool matchesRegex(const String& text, const String& pattern) {
+  regex_t regex;
+  int result;
+  
+  // Compile the regex pattern with extended syntax
+  result = regcomp(&regex, pattern.c_str(), REG_EXTENDED | REG_NOSUB);
+  if (result != 0) {
+    // Pattern compilation failed
+    regfree(&regex);
+    return false;
+  }
+  
+  // Execute the regex match
+  result = regexec(&regex, text.c_str(), 0, NULL, 0);
+  regfree(&regex);
+  
+  return result == 0;  // 0 means match found
+}
+
 bool checkHttpGet(Service& service) {
   HTTPClient http;
   String url = "http://" + service.host + ":" + String(service.port) + service.path;
@@ -915,9 +937,19 @@ bool checkHttpGet(Service& service) {
         isUp = true;
       } else {
         String payload = http.getString();
-        isUp = payload.indexOf(service.expectedResponse) >= 0;
-        if (!isUp) {
-          service.lastError = "Response mismatch";
+        // Check if expectedResponse is a regex pattern (prefixed with "regex:")
+        if (service.expectedResponse.startsWith("regex:")) {
+          String pattern = service.expectedResponse.substring(6);  // Remove "regex:" prefix
+          isUp = matchesRegex(payload, pattern);
+          if (!isUp) {
+            service.lastError = "Regex mismatch";
+          }
+        } else {
+          // Plain substring match
+          isUp = payload.indexOf(service.expectedResponse) >= 0;
+          if (!isUp) {
+            service.lastError = "Response mismatch";
+          }
         }
       }
     } else {
@@ -2390,8 +2422,8 @@ String getWebPage() {
                 </div>
 
                 <div class="form-group" id="responseGroup">
-                    <label for="expectedResponse">Expected Response (* for any)</label>
-                    <input type="text" id="expectedResponse" value="*" placeholder="*">
+                    <label for="expectedResponse">Expected Response (* for any, regex: prefix for regex)</label>
+                    <input type="text" id="expectedResponse" value="*" placeholder="*" title="Use * for any response, plain text for substring match, or regex:pattern for regex matching (e.g., regex:status.*ok)">
                 </div>
 
                 <div class="form-group hidden" id="snmpOidGroup">
