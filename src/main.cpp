@@ -1006,33 +1006,30 @@ bool checkSnmpGet(Service& service) {
   // Create SNMP objects for this request
   WiFiUDP udp;
   SNMPManager snmpManager(service.snmpCommunity.c_str());
-  SNMPGet snmpRequest(service.snmpCommunity.c_str(), 1);  // SNMP v2c
+  SNMPGet snmpRequest(service.snmpCommunity.c_str(), 1);  // SNMP version 2c (0=v1, 1=v2c)
   
   // Initialize SNMP manager
   snmpManager.setUDP(&udp);
   snmpManager.begin();
   
-  // Variable to store the response - we'll try different types
-  static char stringValue[256];
+  // Use local variables to avoid thread safety issues
+  // Use special marker values to detect if they were updated
+  char stringValue[256];
   char* stringValuePtr = stringValue;
   stringValue[0] = '\0';
   
-  static int intValue = 0;
-  static uint32_t gaugeValue = 0;
-  static uint32_t counter32Value = 0;
+  // Use special marker value that's unlikely to be a real SNMP response
+  // INT32_MIN is used as a sentinel to detect if the value was updated
+  int intValue = INT32_MIN;
   
-  // Track which response type we received
-  bool gotString = false;
-  bool gotInt = false;
-  bool gotGauge = false;
-  bool gotCounter = false;
   String responseValue = "";
+  bool gotResponse = false;
   
-  // Add handlers for different value types - we'll use string as primary
+  // Add handler for string values (covers most SNMP types including OctetString)
   ValueCallback* stringCallback = snmpManager.addStringHandler(targetIP, service.snmpOid.c_str(), &stringValuePtr);
+  
+  // Also add integer handler for numeric values
   ValueCallback* intCallback = snmpManager.addIntegerHandler(targetIP, service.snmpOid.c_str(), &intValue);
-  ValueCallback* gaugeCallback = snmpManager.addGaugeHandler(targetIP, service.snmpOid.c_str(), &gaugeValue);
-  ValueCallback* counter32Callback = snmpManager.addCounter32Handler(targetIP, service.snmpOid.c_str(), &counter32Value);
   
   // Build and send SNMP request
   snmpRequest.addOIDPointer(stringCallback);
@@ -1049,33 +1046,20 @@ bool checkSnmpGet(Service& service) {
   // Wait for response with timeout (5 seconds)
   unsigned long startTime = millis();
   const unsigned long timeout = 5000;
-  bool gotResponse = false;
   
   while (millis() - startTime < timeout) {
     snmpManager.loop();
     
-    // Check if we got any response
+    // Check if we got a string response (non-empty string)
     if (stringValue[0] != '\0') {
-      gotString = true;
       responseValue = String(stringValue);
       gotResponse = true;
       break;
     }
-    if (intValue != 0) {
-      gotInt = true;
+    
+    // Check if we got an integer response (value changed from sentinel)
+    if (intValue != INT32_MIN) {
       responseValue = String(intValue);
-      gotResponse = true;
-      break;
-    }
-    if (gaugeValue != 0) {
-      gotGauge = true;
-      responseValue = String(gaugeValue);
-      gotResponse = true;
-      break;
-    }
-    if (counter32Value != 0) {
-      gotCounter = true;
-      responseValue = String(counter32Value);
       gotResponse = true;
       break;
     }
