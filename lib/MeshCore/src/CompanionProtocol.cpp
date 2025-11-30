@@ -25,6 +25,7 @@ constexpr size_t CompanionProtocol::APP_START_RESERVED_SIZE;
 constexpr size_t CompanionProtocol::MAX_TEXT_MESSAGE_LEN;
 constexpr uint8_t CompanionProtocol::MAX_MESH_CHANNELS;
 constexpr size_t CompanionProtocol::MAX_RX_BUFFER_SIZE;
+constexpr unsigned long CompanionProtocol::SEND_CONFIRMATION_TIMEOUT_MS;
 constexpr uint8_t CompanionProtocol::MAX_KNOWN_RESPONSE_CODE;
 
 CompanionProtocol::CompanionProtocol(BLECentralTransport& transport, FrameCodec& codec)
@@ -494,7 +495,39 @@ bool CompanionProtocol::sendTextMessageToChannel(uint8_t channelIndex, const Str
     }
 
     if (m_lastResponseCode == RESP_CODE_OK || m_lastResponseCode == RESP_CODE_SENT) {
-        Serial.println("CompanionProtocol: message sent successfully");
+        Serial.println("CompanionProtocol: message acknowledged, waiting for send confirmation...");
+        
+        // Wait for PUSH_CODE_SEND_CONFIRMED to ensure the remote node has fully
+        // processed the message. Without this wait, disconnecting immediately after
+        // the initial acknowledgment can leave the remote node in an inconsistent
+        // state, requiring a reboot to receive subsequent messages.
+        //
+        // Timing note: PUSH_CODE_SEND_CONFIRMED is sent by the remote node after
+        // it has processed and transmitted the message (e.g., over radio). This
+        // typically takes longer than the initial acknowledgment, so it should
+        // arrive after we start this second wait. If in rare cases it arrives
+        // during the first wait, it would be treated as a push notification and
+        // ignored - the timeout below handles this gracefully.
+        //
+        // Use prepareForExpectedResponse/waitForExpectedResponse to properly handle
+        // the response tracking state and avoid race conditions with onFrame().
+        // Accept RESP_CODE_ERR as an alternative to handle error cases.
+        prepareForExpectedResponse(PUSH_CODE_SEND_CONFIRMED, RESP_CODE_ERR);
+        
+        if (waitForExpectedResponse(SEND_CONFIRMATION_TIMEOUT_MS)) {
+            if (m_lastResponseCode == PUSH_CODE_SEND_CONFIRMED) {
+                Serial.println("CompanionProtocol: send confirmed by remote node");
+            } else if (m_lastResponseCode == RESP_CODE_ERR) {
+                Serial.println("CompanionProtocol: remote node reported error processing message");
+            }
+        } else {
+            // Timeout waiting for confirmation. The message was acknowledged, so it
+            // may still be delivered. Log a warning but return success to allow the
+            // caller to proceed. If the remote node is in an inconsistent state,
+            // subsequent messages may fail until the node is restarted.
+            Serial.println("CompanionProtocol: send confirmation not received (timeout), message may still be delivered");
+        }
+        
         m_lastError = "";
         return true;
     }
