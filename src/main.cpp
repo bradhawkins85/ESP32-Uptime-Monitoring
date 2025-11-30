@@ -379,10 +379,21 @@ void initFileSystem() {
 
   Serial.println("LittleFS mount failed, attempting format...");
 
-  // If mount fails, explicitly format the filesystem first
-  // This handles severely corrupted filesystems better than begin(true)
+  // Second attempt: begin(true) formats automatically on mount failure and
+  // handles partition initialization internally, which is more reliable than
+  // calling format() directly on corrupted or uninitialized flash.
+  if (LittleFS.begin(true)) {
+    Serial.println("LittleFS formatted and mounted successfully");
+    return;
+  }
+
+  Serial.println("LittleFS format via begin(true) failed, trying explicit format...");
+
+  // Third attempt: explicit format for edge cases where begin(true) fails
+  // This can happen if the partition table is misconfigured
   if (!LittleFS.format()) {
     Serial.println("LittleFS format failed! Check partition table and flash configuration.");
+    Serial.println("Ensure partition with type 'spiffs' (used by LittleFS) exists in partitions.csv.");
     return;
   }
 
