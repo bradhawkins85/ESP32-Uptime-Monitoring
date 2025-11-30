@@ -2358,7 +2358,7 @@ String getWebPage() {
                 }
 
                 const rearmInfo = service.rearmCount > 0 
-                    ? `${service.rearmCount} (${service.failedChecksSinceAlert || 0} since last alert)` 
+                    ? `${service.rearmCount} (${service.failedChecksSinceAlert} since last alert)` 
                     : 'disabled';
 
                 return `
