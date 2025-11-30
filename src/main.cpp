@@ -58,6 +58,10 @@ static CompanionProtocol* meshProtocol = nullptr;
 bool bleOperationInProgress = false;
 bool monitoringPaused = false;
 
+// Minimum valid Unix timestamp for NTP validation (2021-01-01 00:00:00 UTC)
+// Used to detect if time has been properly synchronized via NTP
+const time_t MIN_VALID_TIMESTAMP = 1609459200;
+
 // Pending MeshCore notification - used to defer BLE operations from HTTP handlers
 // This prevents task watchdog timeouts by allowing the async web server to complete
 // HTTP response delivery before WiFi is disconnected for BLE operations.
@@ -316,13 +320,13 @@ void initWiFi() {
     // Wait for time to be set (with timeout)
     time_t now = 0;
     int ntpAttempts = 0;
-    while (now < 1609459200 && ntpAttempts < 10) {  // 1609459200 = 2021-01-01
+    while (now < MIN_VALID_TIMESTAMP && ntpAttempts < 10) {
       delay(500);
       time(&now);
       ntpAttempts++;
     }
     
-    if (now >= 1609459200) {
+    if (now >= MIN_VALID_TIMESTAMP) {
       Serial.printf("Time synchronized: %lu\n", (unsigned long)now);
     } else {
       Serial.println("Warning: NTP time sync failed, timestamps may be incorrect");
