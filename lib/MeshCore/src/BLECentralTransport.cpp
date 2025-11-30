@@ -154,8 +154,19 @@ bool BLECentralTransport::send(const uint8_t* data, size_t len) {
         // Copy data to non-const buffer as BLE library expects mutable data
         // This ensures we don't violate the const contract of the interface
         std::vector<uint8_t> buffer(data, data + len);
-        // Use Write With Response for reliable protocol commands
+        // Use Write With Response for reliable protocol commands.
+        // Note: writeValue() is blocking and waits for acknowledgment.
         m_txCharacteristic->writeValue(buffer.data(), buffer.size(), true);
+        
+        // Yield to allow watchdog timer to be fed and other tasks to run.
+        // The BLE write operation can block for significant time waiting for
+        // acknowledgment, which can trigger the Interrupt Watchdog on ESP32.
+        yield();
+        
+        // Small delay after write to allow BLE stack to complete processing.
+        // This helps prevent stack exhaustion from rapid consecutive writes.
+        delay(10);
+        
         return true;
     } catch (...) {
         Serial.println("BLECentralTransport: write error");
