@@ -11,6 +11,7 @@
 #include <WiFiUdp.h>
 #include <Arduino_SNMP_Manager.h>
 #include <regex.h>
+#include <time.h>
 
 // MeshCore layered protocol implementation
 #include "MeshCore.hpp"
@@ -307,6 +308,25 @@ void initWiFi() {
     Serial.println("\nWiFi connected!");
     Serial.print("IP address: ");
     Serial.println(WiFi.localIP());
+    
+    // Synchronize time via NTP - required for MeshCore message timestamps
+    Serial.println("Synchronizing time via NTP...");
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    
+    // Wait for time to be set (with timeout)
+    time_t now = 0;
+    int ntpAttempts = 0;
+    while (now < 1609459200 && ntpAttempts < 10) {  // 1609459200 = 2021-01-01
+      delay(500);
+      time(&now);
+      ntpAttempts++;
+    }
+    
+    if (now >= 1609459200) {
+      Serial.printf("Time synchronized: %lu\n", (unsigned long)now);
+    } else {
+      Serial.println("Warning: NTP time sync failed, timestamps may be incorrect");
+    }
   } else {
     Serial.println("\nFailed to connect to WiFi!");
   }
