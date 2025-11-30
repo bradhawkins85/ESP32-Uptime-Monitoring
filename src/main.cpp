@@ -144,6 +144,7 @@ String getServiceTypeString(ServiceType type);
 String base64Encode(const String& input);
 bool readSmtpResponse(WiFiClient& client, int expectedCode);
 bool sendSmtpCommand(WiFiClient& client, const String& command, int expectedCode);
+void sendBootNotification();
 
 void setup() {
   Serial.begin(115200);
@@ -162,6 +163,15 @@ void setup() {
 
   // Initialize web server
   initWebServer();
+
+  // Send boot notification if enabled and WiFi is connected
+  if (BOOT_NOTIFICATION_ENABLED) {
+    if (WiFi.status() == WL_CONNECTED) {
+      sendBootNotification();
+    } else {
+      Serial.println("Boot notification skipped: WiFi not connected");
+    }
+  }
 
   Serial.println("System ready!");
   Serial.print("Access web interface at: http://");
@@ -1181,6 +1191,37 @@ void sendSmtpNotification(const String& title, const String& message) {
   client->stop();
 
   Serial.println("SMTP notification sent");
+}
+
+void sendBootNotification() {
+  if (!isNtfyConfigured() && !isDiscordConfigured() && !isSmtpConfigured() && !isMeshCoreConfigured()) {
+    Serial.println("Boot notification: No notification channels configured");
+    return;
+  }
+
+  Serial.println("Sending boot notification...");
+
+  String title = "ESP32 Uptime Monitor Started";
+  String message = "Device has booted and is now monitoring services.";
+  message += " IP: " + WiFi.localIP().toString();
+
+  if (isNtfyConfigured()) {
+    sendNtfyNotification(title, message, "rocket,monitor");
+  }
+
+  if (isDiscordConfigured()) {
+    sendDiscordNotification(title, message);
+  }
+
+  if (isSmtpConfigured()) {
+    sendSmtpNotification(title, message);
+  }
+
+  if (isMeshCoreConfigured()) {
+    sendMeshCoreNotification(title, message);
+  }
+
+  Serial.println("Boot notification sent");
 }
 
 void saveServices() {

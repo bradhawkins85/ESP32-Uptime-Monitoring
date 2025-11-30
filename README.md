@@ -168,6 +168,22 @@ Configure an SMTP relay to receive email alerts for uptime changes.
    ```
 3. Rebuild and flash the firmware. The device will send an email whenever a service changes between up and down states. Multiple recipients can be provided as a comma-separated list.
 
+### Enabling boot notifications
+
+Optionally send a notification to all configured channels when the device boots up.
+
+1. In `src/config.cpp`, find the boot notification configuration and change the default value:
+   ```cpp
+   #ifndef BOOT_NOTIFICATION_ENABLED_VALUE
+   #define BOOT_NOTIFICATION_ENABLED_VALUE true  // Change from false to true
+   #endif
+   ```
+2. Alternatively, enable via PlatformIO build flag (no file edits needed):
+   ```ini
+   -DBOOT_NOTIFICATION_ENABLED_VALUE=true
+   ```
+3. Rebuild and flash the firmware. When the device boots and connects to WiFi, it will send a notification to all configured channels (ntfy, Discord, SMTP, MeshCore) indicating that the monitor has started and showing the device IP address.
+
 ## Deploying to ESP32
 
 ### Connect Your ESP32 Board

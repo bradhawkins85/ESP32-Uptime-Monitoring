@@ -34,3 +34,6 @@ extern const char* SMTP_USERNAME;
 extern const char* SMTP_PASSWORD;
 extern const char* SMTP_FROM_ADDRESS;
 extern const char* SMTP_TO_ADDRESS;
+
+// Boot notification configuration
+extern const bool BOOT_NOTIFICATION_ENABLED;
