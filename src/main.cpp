@@ -11,6 +11,7 @@
 #include <WiFiUdp.h>
 #include <Arduino_SNMP_Manager.h>
 #include <regex.h>
+#include <time.h>
 
 // MeshCore layered protocol implementation
 #include "MeshCore.hpp"
@@ -56,6 +57,10 @@ static CompanionProtocol* meshProtocol = nullptr;
 // BLE/WiFi coexistence - ESP32-S3 cannot run WiFi and BLE simultaneously
 bool bleOperationInProgress = false;
 bool monitoringPaused = false;
+
+// Minimum valid Unix timestamp for NTP validation (2021-01-01 00:00:00 UTC)
+// Used to detect if time has been properly synchronized via NTP
+const time_t MIN_VALID_TIMESTAMP = 1609459200;
 
 // Pending MeshCore notification - used to defer BLE operations from HTTP handlers
 // This prevents task watchdog timeouts by allowing the async web server to complete
@@ -307,6 +312,27 @@ void initWiFi() {
     Serial.println("\nWiFi connected!");
     Serial.print("IP address: ");
     Serial.println(WiFi.localIP());
+    
+    // Synchronize time via NTP - required for MeshCore message timestamps
+    // Uses UTC (gmtOffset=0, daylightOffset=0) for consistent Unix timestamps
+    Serial.println("Synchronizing time via NTP...");
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    
+    // Wait for time to be set (with timeout)
+    // Blocking is acceptable here since web server hasn't started yet
+    time_t now = 0;
+    int ntpAttempts = 0;
+    while (now < MIN_VALID_TIMESTAMP && ntpAttempts < 10) {
+      delay(500);
+      time(&now);
+      ntpAttempts++;
+    }
+    
+    if (now >= MIN_VALID_TIMESTAMP) {
+      Serial.printf("Time synchronized: %lu\n", (unsigned long)now);
+    } else {
+      Serial.println("Warning: NTP time sync failed, timestamps may be incorrect");
+    }
   } else {
     Serial.println("\nFailed to connect to WiFi!");
   }

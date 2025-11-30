@@ -1,4 +1,5 @@
 #include "CompanionProtocol.hpp"
+#include <time.h>
 
 // Define static constexpr members for pre-C++17 ODR compliance
 constexpr uint8_t CompanionProtocol::CMD_APP_START;
@@ -471,8 +472,16 @@ bool CompanionProtocol::sendTextMessageToChannel(uint8_t channelIndex, const Str
     payload.push_back(TXT_TYPE_PLAIN);  // txt_type
     payload.push_back(channelIndex);     // channel_index
     
-    // Timestamp - use 0 to indicate "now" (more efficient than loop)
-    payload.insert(payload.end(), TIMESTAMP_SIZE, 0);
+    // Timestamp - use current Unix time (little-endian, 4 bytes)
+    // This requires NTP time to be synchronized via configTime() before calling.
+    // Note: MeshCore protocol uses 32-bit timestamps, which will overflow in 2038.
+    // This is a protocol limitation, not a bug in this implementation.
+    time_t now = time(nullptr);
+    uint32_t timestamp = static_cast<uint32_t>(now);
+    payload.push_back(static_cast<uint8_t>(timestamp & 0xFF));
+    payload.push_back(static_cast<uint8_t>((timestamp >> 8) & 0xFF));
+    payload.push_back(static_cast<uint8_t>((timestamp >> 16) & 0xFF));
+    payload.push_back(static_cast<uint8_t>((timestamp >> 24) & 0xFF));
     
     // Message text (use insert for efficiency)
     payload.insert(payload.end(), message.begin(), message.begin() + textLen);
