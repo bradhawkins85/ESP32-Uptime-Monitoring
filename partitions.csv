@@ -2,9 +2,9 @@
 # The spiffs partition is sized at 960KB (0x0F0000) to ensure proper LittleFS operation
 # This resolves LFS_ERR_CORRUPT (-84) errors that occur with smaller partitions
 # The coredump partition (64KB) stores crash diagnostics for debugging
-# Name,   Type, SubType, Offset,  Size, Flags
-nvs,      data, nvs,     0x9000,  0x5000,
-otadata,  data, ota,     0xe000,  0x2000,
-app0,     app,  ota_0,   0x10000, 0x300000,
-spiffs,   data, spiffs,  0x310000,0x0F0000,
-coredump, data, coredump,0x400000,0x10000,
+# Name,   Type, SubType,  Offset,   Size,  Flags
+nvs,      data, nvs,      0x9000,   0x5000,
+otadata,  data, ota,      0xe000,   0x2000,
+app0,     app,  ota_0,    0x10000,  0x200000,
+app1,     app,  ota_1,    0x210000, 0x200000,
+spiffs,   data, spiffs,   0x410000, 0xBF0000,
