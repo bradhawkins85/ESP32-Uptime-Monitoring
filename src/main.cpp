@@ -123,6 +123,33 @@ const int MAX_SERVICES = 20;
 Service services[MAX_SERVICES];
 int serviceCount = 0;
 
+// Notification queue for failed notifications
+// Only stores the latest notification per service (isUp state)
+// Tracks which notification channels have failed
+struct QueuedNotification {
+  String serviceId;      // Service ID this notification is for
+  String title;          // Notification title
+  String message;        // Notification message
+  bool isUp;             // true = online notification, false = offline notification
+  String tags;           // ntfy tags (for ntfy notifications)
+  bool ntfyPending;      // Needs to be sent via ntfy
+  bool discordPending;   // Needs to be sent via Discord
+  bool smtpPending;      // Needs to be sent via SMTP
+  bool meshPending;      // Needs to be sent via MeshCore
+  unsigned long lastRetry; // Last retry attempt timestamp
+};
+
+const int MAX_QUEUED_NOTIFICATIONS = MAX_SERVICES;
+QueuedNotification notificationQueue[MAX_QUEUED_NOTIFICATIONS];
+int queuedNotificationCount = 0;
+
+// Retry interval for failed notifications (30 seconds for WiFi-based)
+const unsigned long NOTIFICATION_RETRY_INTERVAL = 30000;
+
+// MeshCore retry interval (10 minutes to prevent frequent WiFi disconnects)
+const unsigned long MESHCORE_RETRY_INTERVAL = 600000;
+unsigned long lastMeshCoreRetry = 0;
+
 // prototype declarations
 void initWiFi();
 void initWebServer();
@@ -145,6 +172,21 @@ String base64Encode(const String& input);
 bool readSmtpResponse(WiFiClient& client, int expectedCode);
 bool sendSmtpCommand(WiFiClient& client, const String& command, int expectedCode);
 void sendBootNotification();
+
+// Notification sending functions that return success status
+bool sendNtfyNotificationWithStatus(const String& title, const String& message, const String& tags);
+bool sendDiscordNotificationWithStatus(const String& title, const String& message);
+bool sendSmtpNotificationWithStatus(const String& title, const String& message);
+bool sendMeshCoreNotificationWithStatus(const String& title, const String& message);
+
+// Notification queue functions
+void queueNotification(const String& serviceId, const String& title, const String& message, 
+                       bool isUp, const String& tags, bool ntfyFailed, bool discordFailed, 
+                       bool smtpFailed, bool meshFailed);
+void processNotificationQueue();
+void processMeshCoreQueue();
+int findQueuedNotification(const String& serviceId);
+void removeQueuedNotification(int index);
 
 void setup() {
   Serial.begin(115200);
@@ -213,6 +255,12 @@ void loop() {
     checkServices();
     lastCheckTime = currentTime;
   }
+
+  // Process notification queue for failed notifications (WiFi-based)
+  processNotificationQueue();
+  
+  // Process MeshCore queue separately (batched, 10 minute interval)
+  processMeshCoreQueue();
 
   delay(10);
 }
@@ -894,23 +942,46 @@ void sendOfflineNotification(const Service& service) {
     message += " Error: " + service.lastError;
   }
 
+  String tags = "warning,monitor";
+  bool ntfyFailed = false;
+  bool discordFailed = false;
+  bool smtpFailed = false;
+  bool meshFailed = false;
+
   if (wifiConnected) {
     if (isNtfyConfigured()) {
-      sendNtfyNotification(title, message, "warning,monitor");
+      if (!sendNtfyNotificationWithStatus(title, message, tags)) {
+        ntfyFailed = true;
+      }
     }
 
     if (isDiscordConfigured()) {
-      sendDiscordNotification(title, message);
+      if (!sendDiscordNotificationWithStatus(title, message)) {
+        discordFailed = true;
+      }
     }
 
     if (isSmtpConfigured()) {
-      sendSmtpNotification(title, message);
+      if (!sendSmtpNotificationWithStatus(title, message)) {
+        smtpFailed = true;
+      }
     }
   } else {
-    Serial.println("WiFi offline: skipping internet notifications");
+    Serial.println("WiFi offline: queueing internet notifications");
+    ntfyFailed = isNtfyConfigured();
+    discordFailed = isDiscordConfigured();
+    smtpFailed = isSmtpConfigured();
   }
 
-  sendMeshCoreNotification(title, message);
+  if (isMeshCoreConfigured()) {
+    if (!sendMeshCoreNotificationWithStatus(title, message)) {
+      meshFailed = true;
+    }
+  }
+
+  // Queue any failed notifications for retry
+  queueNotification(service.id, title, message, false, tags, 
+                    ntfyFailed, discordFailed, smtpFailed, meshFailed);
 }
 
 void sendOnlineNotification(const Service& service) {
@@ -927,23 +998,46 @@ void sendOnlineNotification(const Service& service) {
   }
   message += " is back online.";
 
+  String tags = "ok,monitor";
+  bool ntfyFailed = false;
+  bool discordFailed = false;
+  bool smtpFailed = false;
+  bool meshFailed = false;
+
   if (wifiConnected) {
     if (isNtfyConfigured()) {
-      sendNtfyNotification(title, message, "ok,monitor");
+      if (!sendNtfyNotificationWithStatus(title, message, tags)) {
+        ntfyFailed = true;
+      }
     }
 
     if (isDiscordConfigured()) {
-      sendDiscordNotification(title, message);
+      if (!sendDiscordNotificationWithStatus(title, message)) {
+        discordFailed = true;
+      }
     }
 
     if (isSmtpConfigured()) {
-      sendSmtpNotification(title, message);
+      if (!sendSmtpNotificationWithStatus(title, message)) {
+        smtpFailed = true;
+      }
     }
   } else {
-    Serial.println("WiFi offline: skipping internet notifications");
+    Serial.println("WiFi offline: queueing internet notifications");
+    ntfyFailed = isNtfyConfigured();
+    discordFailed = isDiscordConfigured();
+    smtpFailed = isSmtpConfigured();
   }
 
-  sendMeshCoreNotification(title, message);
+  if (isMeshCoreConfigured()) {
+    if (!sendMeshCoreNotificationWithStatus(title, message)) {
+      meshFailed = true;
+    }
+  }
+
+  // Queue any failed notifications for retry
+  queueNotification(service.id, title, message, true, tags, 
+                    ntfyFailed, discordFailed, smtpFailed, meshFailed);
 }
 
 void sendNtfyNotification(const String& title, const String& message, const String& tags) {
@@ -1222,6 +1316,433 @@ void sendBootNotification() {
   }
 
   Serial.println("Boot notification sent");
+}
+
+// Notification functions that return success status for queue management
+
+bool sendNtfyNotificationWithStatus(const String& title, const String& message, const String& tags) {
+  HTTPClient http;
+  String url = String(NTFY_SERVER) + "/" + NTFY_TOPIC;
+
+  WiFiClientSecure client;
+  bool isSecure = url.startsWith("https://");
+  if (isSecure) {
+    client.setInsecure();
+    http.begin(client, url);
+  } else {
+    http.begin(url);
+  }
+  http.addHeader("Title", title);
+  http.addHeader("Tags", tags);
+  http.addHeader("Content-Type", "text/plain");
+
+  if (strlen(NTFY_ACCESS_TOKEN) > 0) {
+    http.addHeader("Authorization", "Bearer " + String(NTFY_ACCESS_TOKEN));
+  } else if (strlen(NTFY_USERNAME) > 0) {
+    http.setAuthorization(NTFY_USERNAME, NTFY_PASSWORD);
+  }
+
+  int httpCode = http.POST(message);
+  http.end();
+
+  if (httpCode >= 200 && httpCode < 300) {
+    Serial.printf("ntfy notification sent: %d\n", httpCode);
+    return true;
+  } else {
+    Serial.printf("Failed to send ntfy notification: %d\n", httpCode);
+    return false;
+  }
+}
+
+bool sendDiscordNotificationWithStatus(const String& title, const String& message) {
+  HTTPClient http;
+  String url = String(DISCORD_WEBHOOK_URL);
+
+  WiFiClientSecure client;
+  bool isSecure = url.startsWith("https://");
+  if (isSecure) {
+    client.setInsecure();
+    http.begin(client, url);
+  } else {
+    http.begin(url);
+  }
+
+  http.addHeader("Content-Type", "application/json");
+
+  JsonDocument doc;
+  doc["content"] = "**" + title + "**\n" + message;
+
+  String payload;
+  serializeJson(doc, payload);
+
+  int httpCode = http.POST(payload);
+  http.end();
+
+  if (httpCode >= 200 && httpCode < 300) {
+    Serial.printf("Discord notification sent: %d\n", httpCode);
+    return true;
+  } else {
+    Serial.printf("Failed to send Discord notification: %d\n", httpCode);
+    return false;
+  }
+}
+
+bool sendSmtpNotificationWithStatus(const String& title, const String& message) {
+  WiFiClient plainClient;
+  WiFiClientSecure secureClient;
+  WiFiClient* client = &plainClient;
+
+  if (SMTP_USE_TLS) {
+    secureClient.setInsecure();
+    client = &secureClient;
+  }
+
+  if (!client->connect(SMTP_SERVER, SMTP_PORT)) {
+    Serial.println("Failed to connect to SMTP server");
+    return false;
+  }
+
+  if (!readSmtpResponse(*client, 220)) { client->stop(); return false; }
+  if (!sendSmtpCommand(*client, "EHLO esp32-monitor", 250)) { client->stop(); return false; }
+
+  if (strlen(SMTP_USERNAME) > 0) {
+    if (!sendSmtpCommand(*client, "AUTH LOGIN", 334)) { client->stop(); return false; }
+    if (!sendSmtpCommand(*client, base64Encode(SMTP_USERNAME), 334)) { client->stop(); return false; }
+    if (!sendSmtpCommand(*client, base64Encode(SMTP_PASSWORD), 235)) { client->stop(); return false; }
+  }
+
+  if (!sendSmtpCommand(*client, "MAIL FROM:<" + String(SMTP_FROM_ADDRESS) + ">", 250)) { client->stop(); return false; }
+
+  String recipients = String(SMTP_TO_ADDRESS);
+  recipients.replace(" ", "");
+  int start = 0;
+  while (start < (int)recipients.length()) {
+    int commaIndex = recipients.indexOf(',', start);
+    if (commaIndex == -1) commaIndex = recipients.length();
+    String address = recipients.substring(start, commaIndex);
+    if (address.length() > 0) {
+      if (!sendSmtpCommand(*client, "RCPT TO:<" + address + ">", 250)) { client->stop(); return false; }
+    }
+    start = commaIndex + 1;
+  }
+
+  if (!sendSmtpCommand(*client, "DATA", 354)) { client->stop(); return false; }
+
+  client->printf("From: <%s>\r\n", SMTP_FROM_ADDRESS);
+  client->printf("To: %s\r\n", SMTP_TO_ADDRESS);
+  client->printf("Subject: %s\r\n", title.c_str());
+  client->println("Content-Type: text/plain; charset=\"UTF-8\"\r\n");
+  client->println(message);
+  client->println(".");
+
+  if (!readSmtpResponse(*client, 250)) { client->stop(); return false; }
+  sendSmtpCommand(*client, "QUIT", 221);
+  client->stop();
+
+  Serial.println("SMTP notification sent");
+  return true;
+}
+
+bool sendMeshCoreNotificationWithStatus(const String& title, const String& message) {
+  // ESP32-S3 cannot run WiFi and BLE simultaneously
+  // Disconnect WiFi, connect BLE, send message, disconnect BLE, reconnect WiFi
+  
+  Serial.println("Starting MeshCore notification (BLE operation)...");
+  
+  // Pause monitoring to prevent false positives during network transition
+  monitoringPaused = true;
+  bleOperationInProgress = true;
+  
+  // Disconnect WiFi before starting BLE
+  disconnectWiFi();
+  
+  // Create the layered protocol stack on demand
+  BLECentralTransport::Config config;
+  config.deviceName = BLE_DEVICE_NAME;
+  config.peerName = BLE_PEER_NAME;
+  config.pairingPin = BLE_PAIRING_PIN;
+  
+  BLECentralTransport transport(config);
+  FrameCodec codec(transport);
+  CompanionProtocol protocol(transport, codec);
+  
+  bool success = false;
+  
+  // Initialize and connect
+  if (transport.init()) {
+    if (transport.connect()) {
+      // Start session
+      if (protocol.startSession("ESP32-Uptime")) {
+        // Find the configured channel
+        uint8_t channelIdx;
+        if (protocol.findChannelByName(BLE_MESH_CHANNEL_NAME, channelIdx)) {
+          // Build the message: combine title and message
+          String fullMessage = title + ": " + message;
+          
+          // Send using the protocol layer
+          if (protocol.sendTextMessageToChannel(channelIdx, fullMessage)) {
+            Serial.println("MeshCore notification sent successfully");
+            success = true;
+          } else {
+            Serial.printf("MeshCore notification failed: send error - %s\n", protocol.getLastError().c_str());
+          }
+        } else {
+          Serial.printf("MeshCore notification skipped: channel not found - %s\n", protocol.getLastError().c_str());
+        }
+      } else {
+        Serial.printf("MeshCore notification skipped: session start failed - %s\n", protocol.getLastError().c_str());
+      }
+    } else {
+      Serial.printf("MeshCore notification skipped: not connected - %s\n", transport.getLastError().c_str());
+    }
+  } else {
+    Serial.printf("MeshCore notification skipped: BLE init failed - %s\n", transport.getLastError().c_str());
+  }
+  
+  // Disconnect BLE and deinitialize to free resources
+  transport.disconnect();
+  transport.deinit();
+  
+  // Reconnect WiFi
+  reconnectWiFi();
+  
+  // Resume monitoring
+  bleOperationInProgress = false;
+  monitoringPaused = false;
+  
+  Serial.println("MeshCore notification operation complete");
+  return success;
+}
+
+// Notification queue helper functions
+
+int findQueuedNotification(const String& serviceId) {
+  for (int i = 0; i < queuedNotificationCount; i++) {
+    if (notificationQueue[i].serviceId == serviceId) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+void removeQueuedNotification(int index) {
+  if (index < 0 || index >= queuedNotificationCount) return;
+  
+  // Shift remaining notifications down
+  for (int i = index; i < queuedNotificationCount - 1; i++) {
+    notificationQueue[i] = notificationQueue[i + 1];
+  }
+  queuedNotificationCount--;
+  Serial.printf("Removed notification from queue, %d remaining\n", queuedNotificationCount);
+}
+
+void queueNotification(const String& serviceId, const String& title, const String& message, 
+                       bool isUp, const String& tags, bool ntfyFailed, bool discordFailed, 
+                       bool smtpFailed, bool meshFailed) {
+  // Check if any channel actually failed
+  if (!ntfyFailed && !discordFailed && !smtpFailed && !meshFailed) {
+    return;  // Nothing to queue
+  }
+  
+  // Look for existing notification for this service
+  int existingIndex = findQueuedNotification(serviceId);
+  
+  if (existingIndex >= 0) {
+    // Update existing notification with latest state
+    // This ensures we only keep the most recent state (up or down)
+    QueuedNotification& existing = notificationQueue[existingIndex];
+    existing.title = title;
+    existing.message = message;
+    existing.isUp = isUp;
+    existing.tags = tags;
+    existing.ntfyPending = ntfyFailed;
+    existing.discordPending = discordFailed;
+    existing.smtpPending = smtpFailed;
+    existing.meshPending = meshFailed;
+    existing.lastRetry = millis();
+    Serial.printf("Updated queued notification for service %s (now %s)\n", 
+                  serviceId.c_str(), isUp ? "UP" : "DOWN");
+  } else {
+    // Add new notification to queue
+    if (queuedNotificationCount >= MAX_QUEUED_NOTIFICATIONS) {
+      Serial.println("Notification queue full, dropping oldest");
+      removeQueuedNotification(0);
+    }
+    
+    QueuedNotification& newNotification = notificationQueue[queuedNotificationCount];
+    newNotification.serviceId = serviceId;
+    newNotification.title = title;
+    newNotification.message = message;
+    newNotification.isUp = isUp;
+    newNotification.tags = tags;
+    newNotification.ntfyPending = ntfyFailed;
+    newNotification.discordPending = discordFailed;
+    newNotification.smtpPending = smtpFailed;
+    newNotification.meshPending = meshFailed;
+    newNotification.lastRetry = millis();
+    queuedNotificationCount++;
+    Serial.printf("Queued notification for service %s (%s), %d in queue\n", 
+                  serviceId.c_str(), isUp ? "UP" : "DOWN", queuedNotificationCount);
+  }
+}
+
+void processNotificationQueue() {
+  if (queuedNotificationCount == 0) return;
+  
+  unsigned long currentTime = millis();
+  bool wifiConnected = WiFi.status() == WL_CONNECTED;
+  
+  // Process each queued notification (WiFi-based channels only)
+  for (int i = 0; i < queuedNotificationCount; i++) {
+    QueuedNotification& notification = notificationQueue[i];
+    
+    // Check if enough time has passed since last retry
+    if (currentTime - notification.lastRetry < NOTIFICATION_RETRY_INTERVAL) {
+      continue;
+    }
+    
+    notification.lastRetry = currentTime;
+    
+    // Retry WiFi-based notifications only if WiFi is connected
+    if (wifiConnected) {
+      if (notification.ntfyPending && isNtfyConfigured()) {
+        if (sendNtfyNotificationWithStatus(notification.title, notification.message, notification.tags)) {
+          notification.ntfyPending = false;
+          Serial.printf("Retry: ntfy notification sent for %s\n", notification.serviceId.c_str());
+        }
+      }
+      
+      if (notification.discordPending && isDiscordConfigured()) {
+        if (sendDiscordNotificationWithStatus(notification.title, notification.message)) {
+          notification.discordPending = false;
+          Serial.printf("Retry: Discord notification sent for %s\n", notification.serviceId.c_str());
+        }
+      }
+      
+      if (notification.smtpPending && isSmtpConfigured()) {
+        if (sendSmtpNotificationWithStatus(notification.title, notification.message)) {
+          notification.smtpPending = false;
+          Serial.printf("Retry: SMTP notification sent for %s\n", notification.serviceId.c_str());
+        }
+      }
+    }
+    
+    // Check if all pending notifications for this service have been sent
+    // (MeshCore is processed separately in processMeshCoreQueue)
+    if (!notification.ntfyPending && !notification.discordPending && 
+        !notification.smtpPending && !notification.meshPending) {
+      Serial.printf("All notifications sent for %s, removing from queue\n", notification.serviceId.c_str());
+      removeQueuedNotification(i);
+      i--;  // Adjust index since we removed an element
+    }
+  }
+}
+
+void processMeshCoreQueue() {
+  // Check if MeshCore is configured and if we have any pending MeshCore notifications
+  if (!isMeshCoreConfigured() || bleOperationInProgress) return;
+  
+  // Check if any notifications have pending MeshCore messages
+  bool hasPendingMesh = false;
+  for (int i = 0; i < queuedNotificationCount; i++) {
+    if (notificationQueue[i].meshPending) {
+      hasPendingMesh = true;
+      break;
+    }
+  }
+  if (!hasPendingMesh) return;
+  
+  // Check if enough time has passed since last MeshCore retry (10 minutes)
+  unsigned long currentTime = millis();
+  if (currentTime - lastMeshCoreRetry < MESHCORE_RETRY_INTERVAL) {
+    return;
+  }
+  
+  Serial.println("Processing MeshCore queue (batched BLE operation)...");
+  
+  // Pause monitoring to prevent false positives during network transition
+  monitoringPaused = true;
+  bleOperationInProgress = true;
+  lastMeshCoreRetry = currentTime;
+  
+  // Disconnect WiFi before starting BLE
+  disconnectWiFi();
+  
+  // Create the layered protocol stack on demand
+  BLECentralTransport::Config config;
+  config.deviceName = BLE_DEVICE_NAME;
+  config.peerName = BLE_PEER_NAME;
+  config.pairingPin = BLE_PAIRING_PIN;
+  
+  BLECentralTransport transport(config);
+  FrameCodec codec(transport);
+  CompanionProtocol protocol(transport, codec);
+  
+  bool sessionReady = false;
+  uint8_t channelIdx = 0;
+  
+  // Initialize, connect and prepare session once
+  if (transport.init()) {
+    if (transport.connect()) {
+      if (protocol.startSession("ESP32-Uptime")) {
+        if (protocol.findChannelByName(BLE_MESH_CHANNEL_NAME, channelIdx)) {
+          sessionReady = true;
+          Serial.println("MeshCore session ready, sending queued messages...");
+        } else {
+          Serial.printf("MeshCore batch: channel not found - %s\n", protocol.getLastError().c_str());
+        }
+      } else {
+        Serial.printf("MeshCore batch: session start failed - %s\n", protocol.getLastError().c_str());
+      }
+    } else {
+      Serial.printf("MeshCore batch: not connected - %s\n", transport.getLastError().c_str());
+    }
+  } else {
+    Serial.printf("MeshCore batch: BLE init failed - %s\n", transport.getLastError().c_str());
+  }
+  
+  // Send all pending MeshCore notifications in this single session
+  if (sessionReady) {
+    for (int i = 0; i < queuedNotificationCount; i++) {
+      QueuedNotification& notification = notificationQueue[i];
+      if (notification.meshPending) {
+        String fullMessage = notification.title + ": " + notification.message;
+        if (protocol.sendTextMessageToChannel(channelIdx, fullMessage)) {
+          notification.meshPending = false;
+          Serial.printf("Retry: MeshCore notification sent for %s\n", notification.serviceId.c_str());
+        } else {
+          Serial.printf("MeshCore send failed for %s: %s\n", 
+                        notification.serviceId.c_str(), protocol.getLastError().c_str());
+        }
+        // Small delay between messages to avoid overwhelming the receiver
+        delay(100);
+      }
+    }
+  }
+  
+  // Disconnect BLE and deinitialize to free resources
+  transport.disconnect();
+  transport.deinit();
+  
+  // Reconnect WiFi
+  reconnectWiFi();
+  
+  // Resume monitoring
+  bleOperationInProgress = false;
+  monitoringPaused = false;
+  
+  Serial.println("MeshCore batch operation complete");
+  
+  // Clean up any notifications that have all channels sent
+  for (int i = 0; i < queuedNotificationCount; i++) {
+    QueuedNotification& notification = notificationQueue[i];
+    if (!notification.ntfyPending && !notification.discordPending && 
+        !notification.smtpPending && !notification.meshPending) {
+      Serial.printf("All notifications sent for %s, removing from queue\n", notification.serviceId.c_str());
+      removeQueuedNotification(i);
+      i--;
+    }
+  }
 }
 
 void saveServices() {
