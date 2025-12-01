@@ -2418,7 +2418,6 @@ void processMeshCoreQueue() {
   
   // Disconnect WiFi before starting BLE
   disconnectWiFi();
-  disconnectWiFi();
   
   // Create the layered protocol stack on heap to reduce stack usage.
   // Stack overflow can occur when these large objects are combined with
