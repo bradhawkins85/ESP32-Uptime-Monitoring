@@ -1426,8 +1426,9 @@ bool checkSnmpGet(Service& service) {
   // Also add integer handler for numeric values
   ValueCallback* intCallback = snmpManager.addIntegerHandler(targetIP, service.snmpOid.c_str(), &intValue);
   
-  // Build and send SNMP request
+  // Build and send SNMP request - add both callbacks
   snmpRequest.addOIDPointer(stringCallback);
+  snmpRequest.addOIDPointer(intCallback);
   snmpRequest.setIP(WiFi.localIP());
   snmpRequest.setUDP(&udp);
   snmpRequest.setRequestID(random(1, 65535));
@@ -1459,7 +1460,8 @@ bool checkSnmpGet(Service& service) {
       break;
     }
     
-    delay(10);
+    // Yield to prevent watchdog timeout
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
   
   if (!gotResponse) {
