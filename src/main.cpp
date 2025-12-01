@@ -1368,7 +1368,7 @@ void sendOfflineNotification(const Service& service) {
 
   String title = "Service DOWN: " + service.name;
   String message = "Service '" + service.name + "' at " + service.host;
-  if (service.port > 0) {
+  if (service.port > 0 && service.type != TYPE_PING) {
     message += ":" + String(service.port);
   }
   message += " is offline.";
@@ -1428,7 +1428,7 @@ void sendOnlineNotification(const Service& service) {
 
   String title = "Service UP: " + service.name;
   String message = "Service '" + service.name + "' at " + service.host;
-  if (service.port > 0) {
+  if (service.port > 0 && service.type != TYPE_PING) {
     message += ":" + String(service.port);
   }
   message += " is back online.";
