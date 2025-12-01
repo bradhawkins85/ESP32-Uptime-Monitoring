@@ -148,6 +148,9 @@ struct Service {
   // Push-specific fields
   String pushToken;       // Unique token for push endpoint (for TYPE_PUSH)
   unsigned long lastPush; // Timestamp of last push received (millis)
+  // Enable/disable and pause fields
+  bool enabled;           // Whether service checks are enabled
+  unsigned long pauseUntil; // Timestamp (millis) until which checks are paused (0 = not paused)
 };
 
 // Store up to 20 services
@@ -165,6 +168,24 @@ const unsigned long PUSH_TIMING_MARGIN_MS = 5000;  // Margin for push timing che
 const int MAX_REGEX_PATTERN_LENGTH = 256;
 const char* REGEX_PREFIX = "regex:";
 const int REGEX_PREFIX_LENGTH = 6;
+
+// Pause/enable constants
+// Max pause: ~46 days to safely fit within unsigned long (millis() range)
+const int MAX_PAUSE_DURATION_SECONDS = 46 * 24 * 60 * 60;  // 46 days
+const unsigned long PAUSE_ROLLOVER_THRESHOLD_MS = 7UL * 24UL * 60UL * 60UL * 1000UL;  // 1 week
+
+// Helper function for rollover-safe pause remaining calculation
+// Returns pause remaining in milliseconds, or 0 if pause expired/rolled over
+inline unsigned long getPauseRemainingMs(unsigned long pauseUntil, unsigned long currentTime) {
+  if (pauseUntil == 0) return 0;
+  // If currentTime has passed pauseUntil (normal expiry), remaining will wrap to large value
+  // If pauseUntil is in the future, remaining will be the actual time left
+  // Both cases are handled by the threshold check below
+  unsigned long remaining = pauseUntil - currentTime;
+  // If remaining is larger than threshold, assume expired or rollover/reboot
+  if (remaining > PAUSE_ROLLOVER_THRESHOLD_MS) return 0;
+  return remaining;
+}
 
 // Notification queue for failed notifications
 // Only stores the latest notification per service (isUp state)
@@ -617,6 +638,11 @@ void initWebServer() {
       obj["snmpExpectedValue"] = services[i].snmpExpectedValue;
       // Push-specific fields
       obj["pushToken"] = services[i].pushToken;
+      // Enable/disable and pause fields
+      obj["enabled"] = services[i].enabled;
+      obj["pauseUntil"] = services[i].pauseUntil;
+      // Calculate pause remaining time in seconds (rollover-safe)
+      obj["pauseRemaining"] = getPauseRemainingMs(services[i].pauseUntil, currentTime) / 1000;
     }
 
     String response;
@@ -706,6 +732,9 @@ void initWebServer() {
       newService.lastUptime = 0;
       newService.lastError = "";
       newService.secondsSinceLastCheck = -1;
+      // Enable/disable and pause fields
+      newService.enabled = true;
+      newService.pauseUntil = 0;
 
       services[serviceCount++] = newService;
       saveServices();
@@ -753,6 +782,81 @@ void initWebServer() {
     saveServices();
     request->send(200, "application/json", "{\"success\":true}");
   });
+
+  // update service (enable/disable/pause)
+  server.on("^\\/api\\/services\\/([a-zA-Z0-9]+)$", HTTP_PATCH, [](AsyncWebServerRequest *request) {}, NULL,
+    [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+      if (!ensureAuthenticated(request)) {
+        return;
+      }
+
+      // Extract service ID from URL path
+      String path = request->url();
+      String serviceId = path.substring(path.lastIndexOf('/') + 1);
+
+      // Find the service
+      int foundIndex = -1;
+      for (int i = 0; i < serviceCount; i++) {
+        if (services[i].id == serviceId) {
+          foundIndex = i;
+          break;
+        }
+      }
+
+      if (foundIndex == -1) {
+        request->send(404, "application/json", "{\"error\":\"Service not found\"}");
+        return;
+      }
+
+      JsonDocument doc;
+      if (deserializeJson(doc, data, len) != DeserializationError::Ok) {
+        request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+        return;
+      }
+
+      // Update enabled status if provided
+      if (!doc["enabled"].isNull()) {
+        services[foundIndex].enabled = doc["enabled"].as<bool>();
+        Serial.printf("Service '%s' enabled set to %s\n", 
+                      services[foundIndex].name.c_str(),
+                      services[foundIndex].enabled ? "true" : "false");
+      }
+
+      // Update pause duration if provided (in seconds, 0 to unpause)
+      if (!doc["pauseDuration"].isNull()) {
+        int pauseDuration = doc["pauseDuration"].as<int>();
+        if (pauseDuration > 0) {
+          // Limit pause duration to prevent overflow (MAX_PAUSE_DURATION_SECONDS * 1000 fits in unsigned long)
+          if (pauseDuration > MAX_PAUSE_DURATION_SECONDS) {
+            pauseDuration = MAX_PAUSE_DURATION_SECONDS;
+          }
+          // Calculate pause end time - safe because pauseDuration is limited
+          unsigned long durationMs = static_cast<unsigned long>(pauseDuration) * 1000UL;
+          services[foundIndex].pauseUntil = millis() + durationMs;
+          Serial.printf("Service '%s' paused for %d seconds\n", 
+                        services[foundIndex].name.c_str(), pauseDuration);
+        } else {
+          services[foundIndex].pauseUntil = 0;
+          Serial.printf("Service '%s' unpaused\n", services[foundIndex].name.c_str());
+        }
+      }
+
+      saveServices();
+
+      // Build response with current state (rollover-safe)
+      unsigned long currentTimeMs = millis();
+      JsonDocument response;
+      response["success"] = true;
+      response["id"] = services[foundIndex].id;
+      response["enabled"] = services[foundIndex].enabled;
+      response["pauseUntil"] = services[foundIndex].pauseUntil;
+      response["pauseRemaining"] = getPauseRemainingMs(services[foundIndex].pauseUntil, currentTimeMs) / 1000;
+
+      String responseStr;
+      serializeJson(response, responseStr);
+      request->send(200, "application/json", responseStr);
+    }
+  );
 
   // export services configuration
   server.on("/api/export", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -913,6 +1017,9 @@ void initWebServer() {
         newService.lastUptime = 0;
         newService.lastError = "";
         newService.secondsSinceLastCheck = -1;
+        // Enable/disable and pause fields - import as enabled and not paused
+        newService.enabled = true;
+        newService.pauseUntil = 0;
 
         services[serviceCount++] = newService;
         importedCount++;
@@ -996,6 +1103,21 @@ void checkServices() {
   unsigned long currentTime = millis();
 
   for (int i = 0; i < serviceCount; i++) {
+    // Skip disabled services
+    if (!services[i].enabled) {
+      continue;
+    }
+
+    // Skip paused services (using rollover-safe helper function)
+    if (services[i].pauseUntil > 0) {
+      unsigned long remaining = getPauseRemainingMs(services[i].pauseUntil, currentTime);
+      if (remaining > 0) {
+        continue;  // Pause is still active
+      }
+      // Pause has expired or rollover detected - clear it
+      services[i].pauseUntil = 0;
+    }
+
     // Check if it's time to check this service
     if (currentTime - services[i].lastCheck < services[i].checkInterval * 1000) {
       continue;
@@ -2264,6 +2386,9 @@ void saveServices() {
     obj["snmpExpectedValue"] = services[i].snmpExpectedValue;
     // Push-specific fields
     obj["pushToken"] = services[i].pushToken;
+    // Enable/disable and pause fields
+    obj["enabled"] = services[i].enabled;
+    obj["pauseUntil"] = services[i].pauseUntil;
   }
 
   if (serializeJson(doc, file) == 0) {
@@ -2334,6 +2459,9 @@ void loadServices() {
     services[serviceCount].lastUptime = 0;
     services[serviceCount].lastError = "";
     services[serviceCount].secondsSinceLastCheck = -1;
+    // Enable/disable and pause fields
+    services[serviceCount].enabled = obj["enabled"] | true;  // Default to enabled
+    services[serviceCount].pauseUntil = obj["pauseUntil"] | 0;
 
     serviceCount++;
   }
@@ -2532,6 +2660,11 @@ String getWebPage() {
             border-left-color: #ef4444;
         }
 
+        .service-card.paused {
+            border-left-color: #f59e0b;
+            opacity: 0.8;
+        }
+
         .service-card:hover {
             transform: translateY(-4px);
             box-shadow: 0 4px 12px rgba(0,0,0,0.15);
@@ -2582,6 +2715,52 @@ String getWebPage() {
             margin-top: 15px;
             padding-top: 15px;
             border-top: 1px solid #e5e7eb;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .modal {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            max-width: 400px;
+            width: 90%;
+        }
+
+        .modal h3 {
+            margin-bottom: 15px;
+            color: #1f2937;
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+            justify-content: flex-end;
+        }
+
+        .pause-options {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .pause-options button {
+            width: 100%;
         }
 
         .type-badge {
@@ -2984,8 +3163,25 @@ String getWebPage() {
                     `;
                 }
 
+                // Build status info for enabled/paused state
+                let statusInfo = '';
+                if (!service.enabled) {
+                    statusInfo = '<div class="service-info" style="color: #6b7280;"><strong>Status:</strong> Disabled</div>';
+                } else if (service.pauseRemaining > 0) {
+                    const pauseMins = Math.floor(service.pauseRemaining / 60);
+                    const pauseSecs = service.pauseRemaining % 60;
+                    const pauseStr = pauseMins > 0 ? `${pauseMins}m ${pauseSecs}s` : `${pauseSecs}s`;
+                    statusInfo = `<div class="service-info" style="color: #f59e0b;"><strong>Status:</strong> Paused (${pauseStr} remaining)</div>`;
+                }
+
+                // Determine service card class based on enabled/paused state
+                let cardClass = service.isUp ? 'up' : 'down';
+                if (!service.enabled || service.pauseRemaining > 0) {
+                    cardClass = 'paused';
+                }
+
                 return `
-                    <div class="service-card ${service.isUp ? 'up' : 'down'}">
+                    <div class="service-card ${cardClass}">
                         <div class="service-header">
                             <div>
                                 <div class="service-name">${service.name}</div>
@@ -2995,6 +3191,7 @@ String getWebPage() {
                                 ${service.isUp ? 'UP' : 'DOWN'}
                             </span>
                         </div>
+                        ${statusInfo}
                         ${urlInfo}
                         ${hostInfo}
                         ${snmpInfo}
@@ -3020,6 +3217,14 @@ String getWebPage() {
                         </div>
                         ` : ''}
                         <div class="service-actions">
+                            ${service.enabled 
+                                ? `<button class="btn btn-secondary" onclick="toggleService('${service.id}', false)">Disable</button>`
+                                : `<button class="btn btn-primary" onclick="toggleService('${service.id}', true)">Enable</button>`
+                            }
+                            ${service.pauseRemaining > 0
+                                ? `<button class="btn btn-secondary" onclick="pauseService('${service.id}', 0)">Unpause</button>`
+                                : `<button class="btn btn-secondary" onclick="showPauseDialog('${service.id}')">Pause</button>`
+                            }
                             <button class="btn btn-danger" onclick="deleteService('${service.id}')">Delete</button>
                         </div>
                     </div>
@@ -3047,6 +3252,89 @@ String getWebPage() {
             } catch (error) {
                 showAlert('Error: ' + error.message, 'error');
             }
+        }
+
+        // Toggle service enabled/disabled
+        async function toggleService(id, enabled) {
+            try {
+                const response = await fetch(`/api/services/${id}`, {
+                    method: 'PATCH',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ enabled: enabled })
+                });
+
+                if (response.ok) {
+                    showAlert(`Service ${enabled ? 'enabled' : 'disabled'} successfully`, 'success');
+                    loadServices();
+                } else {
+                    showAlert('Failed to update service', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
+        }
+
+        // Pause service for specified duration
+        async function pauseService(id, durationSeconds) {
+            try {
+                const response = await fetch(`/api/services/${id}`, {
+                    method: 'PATCH',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ pauseDuration: durationSeconds })
+                });
+
+                if (response.ok) {
+                    if (durationSeconds > 0) {
+                        const mins = Math.floor(durationSeconds / 60);
+                        const secs = durationSeconds % 60;
+                        const timeStr = mins > 0 ? `${mins} minute(s)` : `${secs} seconds`;
+                        showAlert(`Service paused for ${timeStr}`, 'success');
+                    } else {
+                        showAlert('Service unpaused', 'success');
+                    }
+                    loadServices();
+                    closePauseDialog();
+                } else {
+                    showAlert('Failed to update service', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
+        }
+
+        // Show pause duration dialog
+        let currentPauseServiceId = null;
+        function showPauseDialog(id) {
+            currentPauseServiceId = id;
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = 'pauseModal';
+            modal.innerHTML = `
+                <div class="modal">
+                    <h3>Pause Service Checks</h3>
+                    <div class="pause-options">
+                        <button class="btn btn-secondary" onclick="pauseService('${id}', 300)">5 minutes</button>
+                        <button class="btn btn-secondary" onclick="pauseService('${id}', 900)">15 minutes</button>
+                        <button class="btn btn-secondary" onclick="pauseService('${id}', 1800)">30 minutes</button>
+                        <button class="btn btn-secondary" onclick="pauseService('${id}', 3600)">1 hour</button>
+                        <button class="btn btn-secondary" onclick="pauseService('${id}', 14400)">4 hours</button>
+                        <button class="btn btn-secondary" onclick="pauseService('${id}', 86400)">24 hours</button>
+                    </div>
+                    <div class="modal-actions">
+                        <button class="btn btn-secondary" onclick="closePauseDialog()">Cancel</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            modal.addEventListener('click', function(e) {
+                if (e.target === modal) closePauseDialog();
+            });
+        }
+
+        function closePauseDialog() {
+            const modal = document.getElementById('pauseModal');
+            if (modal) modal.remove();
+            currentPauseServiceId = null;
         }
 
         // Show alert
