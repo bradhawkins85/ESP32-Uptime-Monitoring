@@ -560,31 +560,27 @@ bool CompanionProtocol::sendTextMessageToContact(const String& pubKeyHex, const 
         return false;
     }
 
+    // Helper lambda to convert hex character to nibble value
+    // Returns -1 for invalid characters
+    auto hexCharToNibble = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+        if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+        return -1;
+    };
+
     // Parse hex string to bytes
     uint8_t pubKey[PUB_KEY_SIZE];
     for (size_t i = 0; i < PUB_KEY_SIZE; i++) {
-        char highChar = pubKeyHex.charAt(i * 2);
-        char lowChar = pubKeyHex.charAt(i * 2 + 1);
+        int high = hexCharToNibble(pubKeyHex.charAt(i * 2));
+        int low = hexCharToNibble(pubKeyHex.charAt(i * 2 + 1));
         
-        // Convert hex characters to nibbles
-        uint8_t high = 0, low = 0;
-        if (highChar >= '0' && highChar <= '9') high = highChar - '0';
-        else if (highChar >= 'a' && highChar <= 'f') high = 10 + (highChar - 'a');
-        else if (highChar >= 'A' && highChar <= 'F') high = 10 + (highChar - 'A');
-        else {
+        if (high < 0 || low < 0) {
             m_lastError = "Invalid hex character in public key";
             return false;
         }
         
-        if (lowChar >= '0' && lowChar <= '9') low = lowChar - '0';
-        else if (lowChar >= 'a' && lowChar <= 'f') low = 10 + (lowChar - 'a');
-        else if (lowChar >= 'A' && lowChar <= 'F') low = 10 + (lowChar - 'A');
-        else {
-            m_lastError = "Invalid hex character in public key";
-            return false;
-        }
-        
-        pubKey[i] = (high << 4) | low;
+        pubKey[i] = static_cast<uint8_t>((high << 4) | low);
     }
 
     size_t textLen = message.length();
@@ -603,6 +599,8 @@ bool CompanionProtocol::sendTextMessageToContact(const String& pubKeyHex, const 
     payload.insert(payload.end(), pubKey, pubKey + PUB_KEY_SIZE);
     
     // Timestamp - use current Unix time (little-endian, 4 bytes)
+    // This requires NTP time to be synchronized via configTime() before calling.
+    // The ESP32 synchronizes time at boot in main.cpp initWiFi().
     time_t now = time(nullptr);
     uint32_t timestamp = static_cast<uint32_t>(now);
     payload.push_back(static_cast<uint8_t>(timestamp & 0xFF));

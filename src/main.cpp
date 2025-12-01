@@ -2694,6 +2694,9 @@ void processMeshCoreQueue() {
   bool channelFound = false;
   
   // Initialize, connect and prepare session once
+  // Note: sessionReady indicates the MeshCore protocol session is established,
+  // independent of whether a channel is found. Messages can be sent to room server
+  // even if channel lookup fails.
   if (transport->init()) {
     if (transport->connect()) {
       if (protocol->startSession("ESP32-Uptime")) {
