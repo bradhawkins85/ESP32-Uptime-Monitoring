@@ -13,9 +13,37 @@ It serves as a framework to monitor services where support can be hardcoded as a
 - Optional **ntfy offline notifications** when services go down
 - Optional **Discord webhook notifications** for service up/down events
 - Optional **SMTP email notifications** for service up/down events
+- **RGB LED status indicator** - Visual feedback on system and service health
 - Web-based UI for adding and managing services
 - Persistent storage using LittleFS
 - **Export/Import** monitor configurations for backup and restore
+
+## RGB LED Status Indicator
+
+The ESP32-S3 DevKitC has a built-in RGB LED that provides visual feedback on system status. The LED indicates the following states:
+
+| LED Color | Pattern | Status |
+|-----------|---------|--------|
+| Blue | Pulsing | **Booting** - System is starting up and has not yet performed any service checks |
+| Orange | Steady | **No WiFi** - Unable to connect to the configured WiFi network |
+| White | Steady | **MeshCore** - Communicating with MeshCore radio over BLE |
+| Green | Pulsing | **All Up** - All monitored services are online and healthy |
+| Red | Pulsing | **Service Down** - One or more monitored services are offline |
+
+### Disabling the LED
+
+The LED is enabled by default. To disable it, set the following in `src/config.cpp`:
+
+```cpp
+#define LED_ENABLED_VALUE false
+```
+
+Or provide it as a PlatformIO build flag:
+
+```ini
+build_flags =
+    -DLED_ENABLED_VALUE=false
+```
 
 ## Prerequisites
 

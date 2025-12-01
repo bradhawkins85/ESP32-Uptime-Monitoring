@@ -37,3 +37,6 @@ extern const char* SMTP_TO_ADDRESS;
 
 // Boot notification configuration
 extern const bool BOOT_NOTIFICATION_ENABLED;
+
+// RGB LED configuration
+extern const bool LED_ENABLED;
