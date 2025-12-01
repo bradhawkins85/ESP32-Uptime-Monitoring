@@ -873,6 +873,11 @@ void initWebServer() {
         newService.port = port;
         newService.path = obj["path"] | "/";
         newService.url = obj["url"] | "";
+        // Backward compatibility: generate URL from host/port/path if URL is empty
+        if (newService.url.length() == 0 && type == TYPE_HTTP_GET && host.length() > 0) {
+          String protocol = (port == 443) ? "https://" : "http://";
+          newService.url = protocol + host + ":" + String(port) + newService.path;
+        }
         newService.expectedResponse = obj["expectedResponse"] | "*";
         newService.checkInterval = checkInterval;
         newService.passThreshold = passThreshold;
@@ -1086,10 +1091,10 @@ bool checkHttpGet(Service& service) {
   String url = service.url;
   
   // Handle HTTPS URLs by using WiFiClientSecure
-  WiFiClientSecure secureClient;
   bool isSecure = url.startsWith("https://");
   
   if (isSecure) {
+    WiFiClientSecure secureClient;
     secureClient.setInsecure();  // Skip certificate validation
     http.begin(secureClient, url);
   } else {
@@ -2263,7 +2268,9 @@ void loadServices() {
     if (services[serviceCount].url.length() == 0 && 
         services[serviceCount].type == TYPE_HTTP_GET &&
         services[serviceCount].host.length() > 0) {
-      services[serviceCount].url = "http://" + services[serviceCount].host + 
+      // Use HTTPS if port is 443, otherwise use HTTP
+      String protocol = (services[serviceCount].port == 443) ? "https://" : "http://";
+      services[serviceCount].url = protocol + services[serviceCount].host + 
                                    ":" + String(services[serviceCount].port) + 
                                    services[serviceCount].path;
     }
