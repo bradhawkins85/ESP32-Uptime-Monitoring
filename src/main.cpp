@@ -169,6 +169,24 @@ const int MAX_REGEX_PATTERN_LENGTH = 256;
 const char* REGEX_PREFIX = "regex:";
 const int REGEX_PREFIX_LENGTH = 6;
 
+// Pause/enable constants
+// Max pause: ~46 days to safely fit within unsigned long (millis() range)
+const int MAX_PAUSE_DURATION_SECONDS = 46 * 24 * 60 * 60;  // 46 days
+const unsigned long PAUSE_ROLLOVER_THRESHOLD_MS = 7UL * 24UL * 60UL * 60UL * 1000UL;  // 1 week
+
+// Helper function for rollover-safe pause remaining calculation
+// Returns pause remaining in milliseconds, or 0 if pause expired/rolled over
+inline unsigned long getPauseRemainingMs(unsigned long pauseUntil, unsigned long currentTime) {
+  if (pauseUntil == 0) return 0;
+  // If currentTime has passed pauseUntil (normal expiry), remaining will wrap to large value
+  // If pauseUntil is in the future, remaining will be the actual time left
+  // Both cases are handled by the threshold check below
+  unsigned long remaining = pauseUntil - currentTime;
+  // If remaining is larger than threshold, assume expired or rollover/reboot
+  if (remaining > PAUSE_ROLLOVER_THRESHOLD_MS) return 0;
+  return remaining;
+}
+
 // Notification queue for failed notifications
 // Only stores the latest notification per service (isUp state)
 // Tracks which notification channels have failed
@@ -623,12 +641,8 @@ void initWebServer() {
       // Enable/disable and pause fields
       obj["enabled"] = services[i].enabled;
       obj["pauseUntil"] = services[i].pauseUntil;
-      // Calculate pause remaining time in seconds (0 if not paused or past)
-      if (services[i].pauseUntil > currentTime) {
-        obj["pauseRemaining"] = (services[i].pauseUntil - currentTime) / 1000;
-      } else {
-        obj["pauseRemaining"] = 0;
-      }
+      // Calculate pause remaining time in seconds (rollover-safe)
+      obj["pauseRemaining"] = getPauseRemainingMs(services[i].pauseUntil, currentTime) / 1000;
     }
 
     String response;
@@ -801,7 +815,7 @@ void initWebServer() {
       }
 
       // Update enabled status if provided
-      if (doc.containsKey("enabled")) {
+      if (!doc["enabled"].isNull()) {
         services[foundIndex].enabled = doc["enabled"].as<bool>();
         Serial.printf("Service '%s' enabled set to %s\n", 
                       services[foundIndex].name.c_str(),
@@ -809,10 +823,16 @@ void initWebServer() {
       }
 
       // Update pause duration if provided (in seconds, 0 to unpause)
-      if (doc.containsKey("pauseDuration")) {
+      if (!doc["pauseDuration"].isNull()) {
         int pauseDuration = doc["pauseDuration"].as<int>();
         if (pauseDuration > 0) {
-          services[foundIndex].pauseUntil = millis() + (pauseDuration * 1000UL);
+          // Limit pause duration to prevent overflow (MAX_PAUSE_DURATION_SECONDS * 1000 fits in unsigned long)
+          if (pauseDuration > MAX_PAUSE_DURATION_SECONDS) {
+            pauseDuration = MAX_PAUSE_DURATION_SECONDS;
+          }
+          // Calculate pause end time - safe because pauseDuration is limited
+          unsigned long durationMs = static_cast<unsigned long>(pauseDuration) * 1000UL;
+          services[foundIndex].pauseUntil = millis() + durationMs;
           Serial.printf("Service '%s' paused for %d seconds\n", 
                         services[foundIndex].name.c_str(), pauseDuration);
         } else {
@@ -823,17 +843,14 @@ void initWebServer() {
 
       saveServices();
 
-      // Build response with current state
+      // Build response with current state (rollover-safe)
+      unsigned long currentTimeMs = millis();
       JsonDocument response;
       response["success"] = true;
       response["id"] = services[foundIndex].id;
       response["enabled"] = services[foundIndex].enabled;
       response["pauseUntil"] = services[foundIndex].pauseUntil;
-      if (services[foundIndex].pauseUntil > millis()) {
-        response["pauseRemaining"] = (services[foundIndex].pauseUntil - millis()) / 1000;
-      } else {
-        response["pauseRemaining"] = 0;
-      }
+      response["pauseRemaining"] = getPauseRemainingMs(services[foundIndex].pauseUntil, currentTimeMs) / 1000;
 
       String responseStr;
       serializeJson(response, responseStr);
@@ -1091,13 +1108,13 @@ void checkServices() {
       continue;
     }
 
-    // Skip paused services (check if pause time has expired)
-    if (services[i].pauseUntil > 0 && currentTime < services[i].pauseUntil) {
-      continue;
-    }
-
-    // Clear expired pause
-    if (services[i].pauseUntil > 0 && currentTime >= services[i].pauseUntil) {
+    // Skip paused services (using rollover-safe helper function)
+    if (services[i].pauseUntil > 0) {
+      unsigned long remaining = getPauseRemainingMs(services[i].pauseUntil, currentTime);
+      if (remaining > 0) {
+        continue;  // Pause is still active
+      }
+      // Pause has expired or rollover detected - clear it
       services[i].pauseUntil = 0;
     }
 
