@@ -13,6 +13,7 @@
 #include <regex.h>
 #include <time.h>
 #include <esp_random.h>
+#include <ElegantOTA.h>
 
 // MeshCore layered protocol implementation
 #include "MeshCore.hpp"
@@ -472,6 +473,9 @@ void loop() {
   
   // Process MeshCore queue separately (batched, 10 minute interval)
   processMeshCoreQueue();
+  
+  // Handle OTA update events
+  ElegantOTA.loop();
 
   delay(10);
 }
@@ -1220,8 +1224,13 @@ void initWebServer() {
     }
   });
 
+  // Initialize ElegantOTA for firmware updates via web interface
+  // Access the update page at /update
+  ElegantOTA.begin(&server);
+  
   server.begin();
   Serial.println("Web server started");
+  Serial.println("OTA update available at: http://<ip>/update");
 }
 
 String generateServiceId() {
@@ -2987,6 +2996,7 @@ String getWebPage() {
             <div class="card-header">
                 <h2 style="margin: 0; color: #1f2937;">Add New Service</h2>
                 <div class="backup-actions">
+                    <a href="/update" class="btn btn-secondary" target="_blank">OTA Update</a>
                     <button type="button" class="btn btn-secondary" onclick="exportServices()">Export Monitors</button>
                     <label class="btn btn-secondary" for="importFile">Import Monitors</label>
                     <input type="file" id="importFile" accept=".json" onchange="importServices(this.files[0])">
