@@ -17,6 +17,7 @@ It serves as a framework to monitor services where support can be hardcoded as a
 - Web-based UI for adding and managing services
 - Persistent storage using LittleFS
 - **Export/Import** monitor configurations for backup and restore
+- **OTA Updates** - Update firmware via web interface without USB connection
 
 ## RGB LED Status Indicator
 
@@ -312,6 +313,43 @@ The web interface provides export and import functionality to backup and restore
 4. A message will indicate how many services were imported
 
 **Note:** Importing adds services to existing ones rather than replacing them. If you want to start fresh, delete existing services before importing.
+
+## OTA (Over-The-Air) Updates
+
+The ESP32 Uptime Monitor supports firmware updates via the web interface, eliminating the need for a USB connection after initial deployment.
+
+### Updating Firmware via OTA
+
+1. Build your new firmware binary using PlatformIO:
+   ```bash
+   pio run
+   ```
+2. The compiled binary will be located at `.pio/build/esp32-n16r8/firmware.bin`
+3. Open the web interface in your browser
+4. Click the **OTA Update** button in the header (opens in a new tab)
+5. On the ElegantOTA page, click "Firmware" and select your `firmware.bin` file
+6. Click "Update" to begin the firmware upload
+7. Wait for the upload to complete and the device to reboot
+
+**Note:** Your monitor configurations (services) are stored in LittleFS and will persist across firmware updates.
+
+### Generating OTA-compatible Binaries
+
+For OTA updates, you only need the `firmware.bin` file. This is automatically generated when you build the project:
+
+```bash
+# Build firmware
+pio run
+
+# The binary is at:
+# .pio/build/esp32-n16r8/firmware.bin
+```
+
+### Security Considerations
+
+- If HTTP Basic Authentication is enabled (via `WEB_AUTH_USERNAME` and `WEB_AUTH_PASSWORD`), credentials will be required to access the main web interface, but the OTA update page at `/update` is not protected by default
+- Consider restricting network access to the ESP32 if security is a concern
+- Always backup your monitor configurations before performing firmware updates
 
 ## Troubleshooting
 
