@@ -101,7 +101,9 @@ int getMeshProtocolState() {
 enum ServiceType {
   TYPE_HTTP_GET,
   TYPE_PING,
-  TYPE_SNMP_GET
+  TYPE_SNMP_GET,
+  TYPE_PORT,
+  TYPE_PUSH
 };
 
 // SNMP comparison operators for value checks
@@ -140,6 +142,9 @@ struct Service {
   String snmpCommunity;   // SNMP community string (default: "public")
   SnmpCompareOp snmpCompareOp;  // Comparison operator for SNMP value check
   String snmpExpectedValue;     // Expected value for comparison
+  // Push-specific fields
+  String pushToken;       // Unique token for push endpoint (for TYPE_PUSH)
+  unsigned long lastPush; // Timestamp of last push received (millis)
 };
 
 // Store up to 20 services
@@ -187,6 +192,7 @@ bool ensureAuthenticated(AsyncWebServerRequest* request);
 void loadServices();
 void saveServices();
 String generateServiceId();
+String generatePushToken();
 void checkServices();
 void sendOfflineNotification(const Service& service);
 void sendOnlineNotification(const Service& service);
@@ -194,6 +200,8 @@ void sendSmtpNotification(const String& title, const String& message);
 bool checkHttpGet(Service& service);
 bool checkPing(Service& service);
 bool checkSnmpGet(Service& service);
+bool checkPort(Service& service);
+bool checkPush(Service& service);
 int matchesRegex(const String& text, const String& pattern);
 String getWebPage();
 String getServiceTypeString(ServiceType type);
@@ -591,6 +599,8 @@ void initWebServer() {
       obj["snmpCommunity"] = services[i].snmpCommunity;
       obj["snmpCompareOp"] = getSnmpCompareOpString(services[i].snmpCompareOp);
       obj["snmpExpectedValue"] = services[i].snmpExpectedValue;
+      // Push-specific fields
+      obj["pushToken"] = services[i].pushToken;
     }
 
     String response;
@@ -628,6 +638,10 @@ void initWebServer() {
         newService.type = TYPE_PING;
       } else if (typeStr == "snmp_get") {
         newService.type = TYPE_SNMP_GET;
+      } else if (typeStr == "port") {
+        newService.type = TYPE_PORT;
+      } else if (typeStr == "push") {
+        newService.type = TYPE_PUSH;
       } else {
         request->send(400, "application/json", "{\"error\":\"Invalid service type\"}");
         return;
@@ -658,6 +672,14 @@ void initWebServer() {
       newService.snmpCompareOp = parseSnmpCompareOp(compareOpStr);
       newService.snmpExpectedValue = doc["snmpExpectedValue"] | "";
 
+      // Push-specific fields
+      if (newService.type == TYPE_PUSH) {
+        newService.pushToken = generatePushToken();
+      } else {
+        newService.pushToken = "";
+      }
+      newService.lastPush = 0;
+
       newService.consecutivePasses = 0;
       newService.consecutiveFails = 0;
       newService.failedChecksSinceAlert = 0;
@@ -673,6 +695,9 @@ void initWebServer() {
       JsonDocument response;
       response["success"] = true;
       response["id"] = newService.id;
+      if (newService.type == TYPE_PUSH) {
+        response["pushToken"] = newService.pushToken;
+      }
 
       String responseStr;
       serializeJson(response, responseStr);
@@ -733,6 +758,8 @@ void initWebServer() {
       obj["snmpCommunity"] = services[i].snmpCommunity;
       obj["snmpCompareOp"] = getSnmpCompareOpString(services[i].snmpCompareOp);
       obj["snmpExpectedValue"] = services[i].snmpExpectedValue;
+      // Push-specific fields (token is regenerated on import for security)
+      // We don't export the token, just the type
     }
 
     String response;
@@ -781,12 +808,20 @@ void initWebServer() {
         // Validate required fields
         String name = obj["name"].as<String>();
         String host = obj["host"].as<String>();
-        if (name.length() == 0 || host.length() == 0) {
+        String typeStr = obj["type"].as<String>();
+        
+        // Push type doesn't require host
+        if (name.length() == 0) {
+          skippedCount++;
+          continue;
+        }
+        
+        // Non-push types require host
+        if (typeStr != "push" && host.length() == 0) {
           skippedCount++;
           continue;
         }
 
-        String typeStr = obj["type"].as<String>();
         ServiceType type;
         if (typeStr == "http_get") {
           type = TYPE_HTTP_GET;
@@ -794,6 +829,10 @@ void initWebServer() {
           type = TYPE_PING;
         } else if (typeStr == "snmp_get") {
           type = TYPE_SNMP_GET;
+        } else if (typeStr == "port") {
+          type = TYPE_PORT;
+        } else if (typeStr == "push") {
+          type = TYPE_PUSH;
         } else {
           skippedCount++;
           continue;
@@ -833,6 +872,13 @@ void initWebServer() {
         String compareOpStr = obj["snmpCompareOp"] | "=";
         newService.snmpCompareOp = parseSnmpCompareOp(compareOpStr);
         newService.snmpExpectedValue = obj["snmpExpectedValue"] | "";
+        // Push-specific fields - generate new token on import for security
+        if (type == TYPE_PUSH) {
+          newService.pushToken = generatePushToken();
+        } else {
+          newService.pushToken = "";
+        }
+        newService.lastPush = 0;
         newService.consecutivePasses = 0;
         newService.consecutiveFails = 0;
         newService.failedChecksSinceAlert = 0;
@@ -859,12 +905,58 @@ void initWebServer() {
     }
   );
 
+  // Push endpoint for push-based monitoring
+  // Clients send a GET request to /api/push/{token} to register a check pass
+  server.on("/api/push/*", HTTP_GET, [](AsyncWebServerRequest *request) {
+    String path = request->url();
+    String token = path.substring(path.lastIndexOf('/') + 1);
+    
+    if (token.length() == 0) {
+      request->send(400, "application/json", "{\"error\":\"Missing token\"}");
+      return;
+    }
+    
+    // Find the service with this push token
+    bool found = false;
+    for (int i = 0; i < serviceCount; i++) {
+      if (services[i].type == TYPE_PUSH && services[i].pushToken == token) {
+        services[i].lastPush = millis();
+        found = true;
+        Serial.printf("Push received for service '%s'\n", services[i].name.c_str());
+        
+        JsonDocument response;
+        response["success"] = true;
+        response["service"] = services[i].name;
+        response["timestamp"] = services[i].lastPush;
+        
+        String responseStr;
+        serializeJson(response, responseStr);
+        request->send(200, "application/json", responseStr);
+        return;
+      }
+    }
+    
+    if (!found) {
+      request->send(404, "application/json", "{\"error\":\"Invalid push token\"}");
+    }
+  });
+
   server.begin();
   Serial.println("Web server started");
 }
 
 String generateServiceId() {
   return String(millis()) + String(random(1000, 9999));
+}
+
+String generatePushToken() {
+  // Generate a 16-character hex token for push endpoints
+  String token = "";
+  const char hexChars[] = "0123456789abcdef";
+  for (int i = 0; i < 16; i++) {
+    token += hexChars[random(0, 16)];
+  }
+  return token;
 }
 
 void checkServices() {
@@ -891,6 +983,12 @@ void checkServices() {
         break;
       case TYPE_SNMP_GET:
         checkResult = checkSnmpGet(services[i]);
+        break;
+      case TYPE_PORT:
+        checkResult = checkPort(services[i]);
+        break;
+      case TYPE_PUSH:
+        checkResult = checkPush(services[i]);
         break;
     }
 
@@ -1022,6 +1120,40 @@ bool checkPing(Service& service) {
     service.lastError = "Ping timeout";
   }
   return success;
+}
+
+bool checkPort(Service& service) {
+  WiFiClient client;
+  // Attempt TCP connection with 5 second timeout
+  if (client.connect(service.host.c_str(), service.port, 5000)) {
+    client.stop();
+    return true;
+  }
+  service.lastError = "Port closed or unreachable";
+  return false;
+}
+
+bool checkPush(Service& service) {
+  // For push-based services, check if a push was received within the check interval
+  unsigned long currentTime = millis();
+  
+  // If no push has ever been received, treat as not up yet
+  if (service.lastPush == 0) {
+    service.lastError = "No push received yet";
+    return false;
+  }
+  
+  // Check if a push was received within the last check interval period
+  // We add some margin (5 seconds) to account for timing variations
+  unsigned long pushAge = currentTime - service.lastPush;
+  unsigned long intervalMs = (unsigned long)service.checkInterval * 1000UL;
+  
+  if (pushAge <= intervalMs + 5000UL) {
+    return true;
+  }
+  
+  service.lastError = "No push received within interval";
+  return false;
 }
 
 // Helper function to compare SNMP values based on operator
@@ -2061,6 +2193,8 @@ void saveServices() {
     obj["snmpCommunity"] = services[i].snmpCommunity;
     obj["snmpCompareOp"] = (int)services[i].snmpCompareOp;
     obj["snmpExpectedValue"] = services[i].snmpExpectedValue;
+    // Push-specific fields
+    obj["pushToken"] = services[i].pushToken;
   }
 
   if (serializeJson(doc, file) == 0) {
@@ -2108,6 +2242,9 @@ void loadServices() {
     services[serviceCount].snmpCommunity = obj["snmpCommunity"] | "public";
     services[serviceCount].snmpCompareOp = (SnmpCompareOp)(obj["snmpCompareOp"].as<int>());
     services[serviceCount].snmpExpectedValue = obj["snmpExpectedValue"] | "";
+    // Push-specific fields
+    services[serviceCount].pushToken = obj["pushToken"] | "";
+    services[serviceCount].lastPush = 0;
     services[serviceCount].consecutivePasses = 0;
     services[serviceCount].consecutiveFails = 0;
     services[serviceCount].failedChecksSinceAlert = 0;
@@ -2128,6 +2265,8 @@ String getServiceTypeString(ServiceType type) {
     case TYPE_HTTP_GET: return "http_get";
     case TYPE_PING: return "ping";
     case TYPE_SNMP_GET: return "snmp_get";
+    case TYPE_PORT: return "port";
+    case TYPE_PUSH: return "push";
     default: return "unknown";
   }
 }
@@ -2452,17 +2591,19 @@ String getWebPage() {
                             <option value="http_get">HTTP GET</option>
                             <option value="ping">Ping</option>
                             <option value="snmp_get">SNMP GET</option>
+                            <option value="port">Port Check</option>
+                            <option value="push">Push</option>
                         </select>
                     </div>
 
-                    <div class="form-group">
+                    <div class="form-group" id="hostGroup">
                         <label for="serviceHost">Host / IP Address</label>
-                        <input type="text" id="serviceHost" required placeholder="192.168.1.100">
+                        <input type="text" id="serviceHost" placeholder="192.168.1.100">
                     </div>
                 </div>
 
                 <div class="form-row">
-                    <div class="form-group">
+                    <div class="form-group" id="portGroup">
                         <label for="servicePort">Port</label>
                         <input type="number" id="servicePort" value="80" required>
                     </div>
@@ -2547,20 +2688,49 @@ String getWebPage() {
         // Update form fields based on service type
         document.getElementById('serviceType').addEventListener('change', function() {
             const type = this.value;
+            const hostGroup = document.getElementById('hostGroup');
+            const hostInput = document.getElementById('serviceHost');
             const pathGroup = document.getElementById('pathGroup');
             const responseGroup = document.getElementById('responseGroup');
+            const portGroup = document.getElementById('portGroup');
             const portInput = document.getElementById('servicePort');
             const snmpOidGroup = document.getElementById('snmpOidGroup');
             const snmpCommunityGroup = document.getElementById('snmpCommunityGroup');
             const snmpCompareGroup = document.getElementById('snmpCompareGroup');
 
-            if (type === 'ping') {
+            if (type === 'push') {
+                // Push type doesn't need host/port/path
+                hostGroup.classList.add('hidden');
+                hostInput.removeAttribute('required');
+                portGroup.classList.add('hidden');
                 pathGroup.classList.add('hidden');
                 responseGroup.classList.add('hidden');
                 snmpOidGroup.classList.add('hidden');
                 snmpCommunityGroup.classList.add('hidden');
                 snmpCompareGroup.classList.add('hidden');
+            } else if (type === 'ping') {
+                hostGroup.classList.remove('hidden');
+                hostInput.setAttribute('required', '');
+                portGroup.classList.add('hidden');
+                pathGroup.classList.add('hidden');
+                responseGroup.classList.add('hidden');
+                snmpOidGroup.classList.add('hidden');
+                snmpCommunityGroup.classList.add('hidden');
+                snmpCompareGroup.classList.add('hidden');
+            } else if (type === 'port') {
+                hostGroup.classList.remove('hidden');
+                hostInput.setAttribute('required', '');
+                portGroup.classList.remove('hidden');
+                pathGroup.classList.add('hidden');
+                responseGroup.classList.add('hidden');
+                snmpOidGroup.classList.add('hidden');
+                snmpCommunityGroup.classList.add('hidden');
+                snmpCompareGroup.classList.add('hidden');
+                portInput.value = 22;
             } else if (type === 'snmp_get') {
+                hostGroup.classList.remove('hidden');
+                hostInput.setAttribute('required', '');
+                portGroup.classList.remove('hidden');
                 pathGroup.classList.add('hidden');
                 responseGroup.classList.add('hidden');
                 snmpOidGroup.classList.remove('hidden');
@@ -2568,6 +2738,10 @@ String getWebPage() {
                 snmpCompareGroup.classList.remove('hidden');
                 portInput.value = 161;
             } else {
+                // http_get
+                hostGroup.classList.remove('hidden');
+                hostInput.setAttribute('required', '');
+                portGroup.classList.remove('hidden');
                 pathGroup.classList.remove('hidden');
                 snmpOidGroup.classList.add('hidden');
                 snmpCommunityGroup.classList.add('hidden');
@@ -2688,6 +2862,27 @@ String getWebPage() {
                     `;
                 }
 
+                // Build push info section if applicable
+                let pushInfo = '';
+                if (service.type === 'push' && service.pushToken) {
+                    const pushUrl = window.location.origin + '/api/push/' + service.pushToken;
+                    pushInfo = `
+                        <div class="service-info">
+                            <strong>Push URL:</strong> <code style="font-size: 0.85em; background: #f3f4f6; padding: 2px 6px; border-radius: 4px; word-break: break-all;">${pushUrl}</code>
+                        </div>
+                    `;
+                }
+
+                // Build host info - not applicable for push type
+                let hostInfo = '';
+                if (service.type !== 'push') {
+                    hostInfo = `
+                        <div class="service-info">
+                            <strong>Host:</strong> ${service.host}${service.type !== 'ping' ? ':' + service.port : ''}
+                        </div>
+                    `;
+                }
+
                 return `
                     <div class="service-card ${service.isUp ? 'up' : 'down'}">
                         <div class="service-header">
@@ -2699,15 +2894,14 @@ String getWebPage() {
                                 ${service.isUp ? 'UP' : 'DOWN'}
                             </span>
                         </div>
-                        <div class="service-info">
-                            <strong>Host:</strong> ${service.host}:${service.port}
-                        </div>
-                        ${service.path && service.type !== 'ping' && service.type !== 'snmp_get' ? `
+                        ${hostInfo}
+                        ${service.path && service.type !== 'ping' && service.type !== 'snmp_get' && service.type !== 'port' && service.type !== 'push' ? `
                         <div class="service-info">
                             <strong>Path:</strong> ${service.path}
                         </div>
                         ` : ''}
                         ${snmpInfo}
+                        ${pushInfo}
                         <div class="service-info">
                             <strong>Check Interval:</strong> ${service.checkInterval}s
                         </div>
