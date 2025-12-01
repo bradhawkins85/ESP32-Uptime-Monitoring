@@ -22,8 +22,10 @@ public:
         Serial.println("BLE ClientCallbacks: onConnect triggered");
         m_transport->m_connected = true;
         m_transport->m_lastError = "";
-        if (m_transport->m_stateCallback) {
-            m_transport->m_stateCallback(true);
+        // Take a local copy to prevent race condition with clearCallbacks()
+        StateCallback callback = m_transport->m_stateCallback;
+        if (callback) {
+            callback(true);
         }
     }
 
@@ -32,8 +34,10 @@ public:
         m_transport->m_connected = false;
         m_transport->m_txCharacteristic = nullptr;
         m_transport->m_rxCharacteristic = nullptr;
-        if (m_transport->m_stateCallback) {
-            m_transport->m_stateCallback(false);
+        // Take a local copy to prevent race condition with clearCallbacks()
+        StateCallback callback = m_transport->m_stateCallback;
+        if (callback) {
+            callback(false);
         }
     }
 
@@ -186,8 +190,14 @@ void BLECentralTransport::clearCallbacks() {
 
 void BLECentralTransport::notifyCallback(BLERemoteCharacteristic* pCharacteristic,
                                           uint8_t* pData, size_t length, bool isNotify) {
-    if (s_instance && s_instance->m_rxCallback && length > 0) {
-        s_instance->m_rxCallback(pData, length);
+    if (s_instance == nullptr || length == 0) {
+        return;
+    }
+    // Take a local copy of the callback to prevent race condition where
+    // clearCallbacks() sets m_rxCallback to nullptr between check and call.
+    RxCallback callback = s_instance->m_rxCallback;
+    if (callback) {
+        callback(pData, length);
     }
 }
 
