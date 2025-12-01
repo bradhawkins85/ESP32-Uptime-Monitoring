@@ -336,7 +336,17 @@ bool isSmtpConfigured() {
 }
 
 bool isMeshCoreConfigured() {
-  return strlen(BLE_PEER_NAME) > 0;
+  // MeshCore is configured if peer name is set AND (channel OR room server is set)
+  return strlen(BLE_PEER_NAME) > 0 && 
+         (strlen(BLE_MESH_CHANNEL_NAME) > 0 || strlen(BLE_MESH_ROOM_SERVER_ID) > 0);
+}
+
+bool isMeshChannelConfigured() {
+  return strlen(BLE_MESH_CHANNEL_NAME) > 0;
+}
+
+bool isMeshRoomServerConfigured() {
+  return strlen(BLE_MESH_ROOM_SERVER_ID) > 0;
 }
 
 void sendNtfyNotification(const String& title, const String& message, const String& tags = "warning,monitor");
@@ -896,6 +906,9 @@ void initWebServer() {
     doc["peerName"] = BLE_PEER_NAME;
     doc["deviceName"] = BLE_DEVICE_NAME;
     doc["channel"] = BLE_MESH_CHANNEL_NAME;
+    doc["channelConfigured"] = isMeshChannelConfigured();
+    doc["roomServerId"] = BLE_MESH_ROOM_SERVER_ID;
+    doc["roomServerConfigured"] = isMeshRoomServerConfigured();
     doc["channelReady"] = isMeshChannelReady();
     doc["protocolState"] = getMeshProtocolState();
     doc["lastError"] = getMeshLastError();
@@ -2435,28 +2448,44 @@ bool sendMeshCoreNotificationWithStatus(const String& title, const String& messa
   CompanionProtocol* protocol = new CompanionProtocol(*transport, *codec);
   
   bool success = false;
+  bool channelSent = false;
+  bool roomServerSent = false;
   
   // Initialize and connect
   if (transport->init()) {
     if (transport->connect()) {
       // Start session
       if (protocol->startSession("ESP32-Uptime")) {
-        // Find the configured channel
-        uint8_t channelIdx;
-        if (protocol->findChannelByName(BLE_MESH_CHANNEL_NAME, channelIdx)) {
-          // Build the message: combine title and message
-          String fullMessage = title + ": " + message;
-          
-          // Send using the protocol layer
-          if (protocol->sendTextMessageToChannel(channelIdx, fullMessage)) {
-            Serial.println("MeshCore notification sent successfully");
-            success = true;
+        // Build the message: combine title and message
+        String fullMessage = title + ": " + message;
+        
+        // Send to channel if configured
+        if (isMeshChannelConfigured()) {
+          uint8_t channelIdx;
+          if (protocol->findChannelByName(BLE_MESH_CHANNEL_NAME, channelIdx)) {
+            if (protocol->sendTextMessageToChannel(channelIdx, fullMessage)) {
+              Serial.println("MeshCore channel notification sent successfully");
+              channelSent = true;
+            } else {
+              Serial.printf("MeshCore channel notification failed: send error - %s\n", protocol->getLastError().c_str());
+            }
           } else {
-            Serial.printf("MeshCore notification failed: send error - %s\n", protocol->getLastError().c_str());
+            Serial.printf("MeshCore channel notification skipped: channel not found - %s\n", protocol->getLastError().c_str());
           }
-        } else {
-          Serial.printf("MeshCore notification skipped: channel not found - %s\n", protocol->getLastError().c_str());
         }
+        
+        // Send to room server if configured
+        if (isMeshRoomServerConfigured()) {
+          if (protocol->sendTextMessageToContact(BLE_MESH_ROOM_SERVER_ID, fullMessage)) {
+            Serial.println("MeshCore room server notification sent successfully");
+            roomServerSent = true;
+          } else {
+            Serial.printf("MeshCore room server notification failed: send error - %s\n", protocol->getLastError().c_str());
+          }
+        }
+        
+        // Success if at least one destination received the message
+        success = channelSent || roomServerSent;
       } else {
         Serial.printf("MeshCore notification skipped: session start failed - %s\n", protocol->getLastError().c_str());
       }
@@ -2662,16 +2691,23 @@ void processMeshCoreQueue() {
   
   bool sessionReady = false;
   uint8_t channelIdx = 0;
+  bool channelFound = false;
   
   // Initialize, connect and prepare session once
   if (transport->init()) {
     if (transport->connect()) {
       if (protocol->startSession("ESP32-Uptime")) {
-        if (protocol->findChannelByName(BLE_MESH_CHANNEL_NAME, channelIdx)) {
-          sessionReady = true;
-          Serial.println("MeshCore session ready, sending queued messages...");
-        } else {
-          Serial.printf("MeshCore batch: channel not found - %s\n", protocol->getLastError().c_str());
+        sessionReady = true;
+        Serial.println("MeshCore session ready");
+        
+        // Find channel if configured
+        if (isMeshChannelConfigured()) {
+          if (protocol->findChannelByName(BLE_MESH_CHANNEL_NAME, channelIdx)) {
+            channelFound = true;
+            Serial.printf("MeshCore batch: channel found at index %d\n", channelIdx);
+          } else {
+            Serial.printf("MeshCore batch: channel not found - %s\n", protocol->getLastError().c_str());
+          }
         }
       } else {
         Serial.printf("MeshCore batch: session start failed - %s\n", protocol->getLastError().c_str());
@@ -2689,13 +2725,34 @@ void processMeshCoreQueue() {
       QueuedNotification& notification = notificationQueue[i];
       if (notification.meshPending) {
         String fullMessage = notification.title + ": " + notification.message;
-        if (protocol->sendTextMessageToChannel(channelIdx, fullMessage)) {
-          notification.meshPending = false;
-          Serial.printf("Retry: MeshCore notification sent for %s\n", notification.serviceId.c_str());
-        } else {
-          Serial.printf("MeshCore send failed for %s: %s\n", 
-                        notification.serviceId.c_str(), protocol->getLastError().c_str());
+        bool sent = false;
+        
+        // Send to channel if configured and found
+        if (channelFound) {
+          if (protocol->sendTextMessageToChannel(channelIdx, fullMessage)) {
+            Serial.printf("Retry: MeshCore channel notification sent for %s\n", notification.serviceId.c_str());
+            sent = true;
+          } else {
+            Serial.printf("MeshCore channel send failed for %s: %s\n", 
+                          notification.serviceId.c_str(), protocol->getLastError().c_str());
+          }
         }
+        
+        // Send to room server if configured
+        if (isMeshRoomServerConfigured()) {
+          if (protocol->sendTextMessageToContact(BLE_MESH_ROOM_SERVER_ID, fullMessage)) {
+            Serial.printf("Retry: MeshCore room server notification sent for %s\n", notification.serviceId.c_str());
+            sent = true;
+          } else {
+            Serial.printf("MeshCore room server send failed for %s: %s\n", 
+                          notification.serviceId.c_str(), protocol->getLastError().c_str());
+          }
+        }
+        
+        if (sent) {
+          notification.meshPending = false;
+        }
+        
         // Small delay between messages to avoid overwhelming the receiver
         delay(100);
       }

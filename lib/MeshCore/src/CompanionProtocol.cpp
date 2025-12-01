@@ -28,6 +28,7 @@ constexpr uint8_t CompanionProtocol::MAX_MESH_CHANNELS;
 constexpr size_t CompanionProtocol::MAX_RX_BUFFER_SIZE;
 constexpr unsigned long CompanionProtocol::SEND_CONFIRMATION_TIMEOUT_MS;
 constexpr uint8_t CompanionProtocol::MAX_KNOWN_RESPONSE_CODE;
+constexpr size_t CompanionProtocol::PUB_KEY_SIZE;
 
 CompanionProtocol::CompanionProtocol(BLECentralTransport& transport, FrameCodec& codec)
     : m_transport(transport)
@@ -544,4 +545,112 @@ bool CompanionProtocol::sendTextMessageToChannel(uint8_t channelIndex, const Str
     m_lastError = "Unexpected response code";
     Serial.printf("CompanionProtocol: unexpected response 0x%02X\n", m_lastResponseCode);
     return false;  // Return false for unexpected response
+}
+
+bool CompanionProtocol::sendTextMessageToContact(const String& pubKeyHex, const String& message) {
+    if (m_state < State::SessionReady) {
+        m_lastError = "Session not ready";
+        return false;
+    }
+
+    // Validate hex string length (32 bytes = 64 hex chars)
+    if (pubKeyHex.length() != PUB_KEY_SIZE * 2) {
+        m_lastError = "Invalid public key length (expected 64 hex characters)";
+        Serial.printf("CompanionProtocol: invalid pubkey length %d\n", (int)pubKeyHex.length());
+        return false;
+    }
+
+    // Parse hex string to bytes
+    uint8_t pubKey[PUB_KEY_SIZE];
+    for (size_t i = 0; i < PUB_KEY_SIZE; i++) {
+        char highChar = pubKeyHex.charAt(i * 2);
+        char lowChar = pubKeyHex.charAt(i * 2 + 1);
+        
+        // Convert hex characters to nibbles
+        uint8_t high = 0, low = 0;
+        if (highChar >= '0' && highChar <= '9') high = highChar - '0';
+        else if (highChar >= 'a' && highChar <= 'f') high = 10 + (highChar - 'a');
+        else if (highChar >= 'A' && highChar <= 'F') high = 10 + (highChar - 'A');
+        else {
+            m_lastError = "Invalid hex character in public key";
+            return false;
+        }
+        
+        if (lowChar >= '0' && lowChar <= '9') low = lowChar - '0';
+        else if (lowChar >= 'a' && lowChar <= 'f') low = 10 + (lowChar - 'a');
+        else if (lowChar >= 'A' && lowChar <= 'F') low = 10 + (lowChar - 'A');
+        else {
+            m_lastError = "Invalid hex character in public key";
+            return false;
+        }
+        
+        pubKey[i] = (high << 4) | low;
+    }
+
+    size_t textLen = message.length();
+    if (textLen > MAX_TEXT_MESSAGE_LEN) {
+        textLen = MAX_TEXT_MESSAGE_LEN;
+    }
+
+    // CMD_SEND_TXT_MSG: txt_type(1) + pub_key(32) + timestamp(4) + text
+    const size_t TIMESTAMP_SIZE = 4;
+    std::vector<uint8_t> payload;
+    payload.reserve(1 + PUB_KEY_SIZE + TIMESTAMP_SIZE + textLen);
+    
+    payload.push_back(TXT_TYPE_PLAIN);  // txt_type
+    
+    // Public key (32 bytes)
+    payload.insert(payload.end(), pubKey, pubKey + PUB_KEY_SIZE);
+    
+    // Timestamp - use current Unix time (little-endian, 4 bytes)
+    time_t now = time(nullptr);
+    uint32_t timestamp = static_cast<uint32_t>(now);
+    payload.push_back(static_cast<uint8_t>(timestamp & 0xFF));
+    payload.push_back(static_cast<uint8_t>((timestamp >> 8) & 0xFF));
+    payload.push_back(static_cast<uint8_t>((timestamp >> 16) & 0xFF));
+    payload.push_back(static_cast<uint8_t>((timestamp >> 24) & 0xFF));
+    
+    // Message text
+    payload.insert(payload.end(), message.begin(), message.begin() + textLen);
+
+    Serial.printf("CompanionProtocol: sending DM to contact (pubkey: %s...)\n", 
+                  pubKeyHex.substring(0, 8).c_str());
+
+    // Set up expected response tracking BEFORE sending the command.
+    prepareForExpectedResponse(RESP_CODE_OK, RESP_CODE_SENT);
+    
+    if (!m_codec.sendFrame(CMD_SEND_TXT_MSG, payload)) {
+        m_lastError = "Failed to send message";
+        return false;
+    }
+
+    if (!waitForExpectedResponse(5000)) {
+        m_lastError = "No acknowledgment received (message may have been sent)";
+        Serial.println("CompanionProtocol: no response for DM (may still be sent)");
+        return false;
+    }
+
+    if (m_lastResponseCode == RESP_CODE_OK || m_lastResponseCode == RESP_CODE_SENT) {
+        Serial.println("CompanionProtocol: DM acknowledged, waiting for send confirmation...");
+        
+        // Wait for send confirmation similar to channel messages
+        prepareForExpectedResponse(PUSH_CODE_SEND_CONFIRMED, RESP_CODE_ERR);
+        
+        if (waitForExpectedResponse(SEND_CONFIRMATION_TIMEOUT_MS)) {
+            if (m_lastResponseCode == PUSH_CODE_SEND_CONFIRMED) {
+                Serial.println("CompanionProtocol: DM send confirmed by remote node");
+            } else if (m_lastResponseCode == RESP_CODE_ERR) {
+                Serial.println("CompanionProtocol: remote node reported error processing DM");
+            }
+        } else {
+            Serial.println("CompanionProtocol: DM send confirmation not received (timeout)");
+        }
+        
+        m_lastError = "";
+        return true;
+    }
+
+    m_lastError = "Unexpected response code";
+    Serial.printf("CompanionProtocol: unexpected response 0x%02X\n", m_lastResponseCode);
+    return false;
 }

@@ -15,6 +15,7 @@ extern const char* BLE_DEVICE_NAME;
 extern const char* BLE_PEER_NAME;
 extern const uint32_t BLE_PAIRING_PIN;
 extern const char* BLE_MESH_CHANNEL_NAME;
+extern const char* BLE_MESH_ROOM_SERVER_ID;
 
 // ntfy configuration
 extern const char* NTFY_SERVER;
