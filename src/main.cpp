@@ -203,6 +203,8 @@ static int currentServiceIndex = 0;
 static bool displayNeedsUpdate = true;
 static unsigned long lastDisplaySwitch = 0;
 static const unsigned long DISPLAY_ROTATION_INTERVAL = 8000;
+static unsigned long lastTouchTime = 0;
+static const unsigned long TOUCH_DEBOUNCE_MS = 300;  // Debounce interval for touch input
 
 // Function prototypes for LCD
 void initDisplay();
@@ -3033,8 +3035,8 @@ void handleDisplayLoop() {
     lastDisplaySwitch = now;
   }
 
-  // Handle touch input for manual navigation
-  if (touchReady && serviceCount > 0) {
+  // Handle touch input for manual navigation (non-blocking debounce)
+  if (touchReady && serviceCount > 0 && (now - lastTouchTime >= TOUCH_DEBOUNCE_MS)) {
     lgfx::touch_point_t tp;
     int touchCount = display.getTouch(&tp, 1);
     
@@ -3053,11 +3055,7 @@ void handleDisplayLoop() {
         }
         displayNeedsUpdate = true;
         lastDisplaySwitch = now;
-        
-        // Wait for touch release to prevent multiple triggers
-        while (display.getTouch(&tp, 1) > 0) {
-          delay(50);
-        }
+        lastTouchTime = now;  // Record touch time for debounce
       }
     }
   }
