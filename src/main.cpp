@@ -12,6 +12,7 @@
 #include <Arduino_SNMP_Manager.h>
 #include <regex.h>
 #include <time.h>
+#include <esp_random.h>
 
 // MeshCore layered protocol implementation
 #include "MeshCore.hpp"
@@ -151,6 +152,12 @@ struct Service {
 const int MAX_SERVICES = 20;
 Service services[MAX_SERVICES];
 int serviceCount = 0;
+
+// Port check constants
+const int PORT_CHECK_TIMEOUT_MS = 5000;  // TCP connection timeout for port checks
+
+// Push check constants
+const unsigned long PUSH_TIMING_MARGIN_MS = 5000;  // Margin for push timing checks
 
 // Regex matching constants
 const int MAX_REGEX_PATTERN_LENGTH = 256;
@@ -951,10 +958,11 @@ String generateServiceId() {
 
 String generatePushToken() {
   // Generate a 16-character hex token for push endpoints
+  // Uses ESP32's hardware random number generator for better entropy
   String token = "";
   const char hexChars[] = "0123456789abcdef";
   for (int i = 0; i < 16; i++) {
-    token += hexChars[random(0, 16)];
+    token += hexChars[esp_random() % 16];
   }
   return token;
 }
@@ -1124,8 +1132,8 @@ bool checkPing(Service& service) {
 
 bool checkPort(Service& service) {
   WiFiClient client;
-  // Attempt TCP connection with 5 second timeout
-  if (client.connect(service.host.c_str(), service.port, 5000)) {
+  // Attempt TCP connection with configured timeout
+  if (client.connect(service.host.c_str(), service.port, PORT_CHECK_TIMEOUT_MS)) {
     client.stop();
     return true;
   }
@@ -1144,11 +1152,11 @@ bool checkPush(Service& service) {
   }
   
   // Check if a push was received within the last check interval period
-  // We add some margin (5 seconds) to account for timing variations
+  // We add some margin to account for timing variations
   unsigned long pushAge = currentTime - service.lastPush;
   unsigned long intervalMs = (unsigned long)service.checkInterval * 1000UL;
   
-  if (pushAge <= intervalMs + 5000UL) {
+  if (pushAge <= intervalMs + PUSH_TIMING_MARGIN_MS) {
     return true;
   }
   
