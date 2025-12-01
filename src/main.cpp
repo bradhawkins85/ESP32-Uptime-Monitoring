@@ -451,6 +451,12 @@ void initFileSystem() {
 }
 
 void disconnectMeshCore() {
+  // Clear callbacks before cleanup to prevent use-after-free.
+  // BLE callbacks could fire during disconnect/deinit and would reference deleted objects.
+  if (meshCodec != nullptr) {
+    meshCodec->clearCallbacks();
+  }
+  
   // Clean up the layered protocol stack
   if (meshProtocol != nullptr) {
     delete meshProtocol;
@@ -1604,6 +1610,10 @@ void sendMeshCoreNotification(const String& title, const String& message) {
     Serial.printf("MeshCore notification skipped: BLE init failed - %s\n", transport->getLastError().c_str());
   }
   
+  // Clear callbacks before cleanup to prevent use-after-free.
+  // BLE callbacks could fire during disconnect/deinit and would reference deleted objects.
+  codec->clearCallbacks();
+  
   // Disconnect BLE and deinitialize to free resources
   transport->disconnect();
   transport->deinit();
@@ -1949,6 +1959,10 @@ bool sendMeshCoreNotificationWithStatus(const String& title, const String& messa
     Serial.printf("MeshCore notification skipped: BLE init failed - %s\n", transport->getLastError().c_str());
   }
   
+  // Clear callbacks before cleanup to prevent use-after-free.
+  // BLE callbacks could fire during disconnect/deinit and would reference deleted objects.
+  codec->clearCallbacks();
+  
   // Disconnect BLE and deinitialize to free resources
   transport->disconnect();
   transport->deinit();
@@ -2176,6 +2190,10 @@ void processMeshCoreQueue() {
       }
     }
   }
+  
+  // Clear callbacks before cleanup to prevent use-after-free.
+  // BLE callbacks could fire during disconnect/deinit and would reference deleted objects.
+  codec->clearCallbacks();
   
   // Disconnect BLE and deinitialize to free resources
   transport->disconnect();

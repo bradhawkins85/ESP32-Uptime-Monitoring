@@ -179,6 +179,11 @@ void BLECentralTransport::setStateCallback(StateCallback callback) {
     m_stateCallback = std::move(callback);
 }
 
+void BLECentralTransport::clearCallbacks() {
+    m_rxCallback = nullptr;
+    m_stateCallback = nullptr;
+}
+
 void BLECentralTransport::notifyCallback(BLERemoteCharacteristic* pCharacteristic,
                                           uint8_t* pData, size_t length, bool isNotify) {
     if (s_instance && s_instance->m_rxCallback && length > 0) {

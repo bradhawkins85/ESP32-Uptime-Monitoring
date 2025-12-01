@@ -45,4 +45,10 @@ public:
      * @param callback Function to call when connection state changes
      */
     virtual void setStateCallback(StateCallback callback) = 0;
+
+    /**
+     * Clear all callbacks to prevent use-after-free when higher layers are deleted.
+     * Must be called before deleting objects that have registered callbacks.
+     */
+    virtual void clearCallbacks() = 0;
 };

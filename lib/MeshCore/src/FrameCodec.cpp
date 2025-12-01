@@ -17,6 +17,11 @@ void FrameCodec::setFrameCallback(FrameCallback callback) {
     m_frameCallback = std::move(callback);
 }
 
+void FrameCodec::clearCallbacks() {
+    m_frameCallback = nullptr;
+    m_transport.clearCallbacks();
+}
+
 bool FrameCodec::sendFrame(uint8_t cmd, const uint8_t* payload, size_t payloadLen) {
     // Validate total frame size
     size_t totalLen = 1 + payloadLen;  // cmd + payload

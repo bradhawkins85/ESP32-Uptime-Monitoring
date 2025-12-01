@@ -56,6 +56,12 @@ public:
     void setRxCallback(RxCallback callback) override;
     void setStateCallback(StateCallback callback) override;
 
+    /**
+     * Clear all callbacks to prevent use-after-free.
+     * Must be called before deleting higher-layer objects.
+     */
+    void clearCallbacks() override;
+
     // BLE-specific methods
     
     /**

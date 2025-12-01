@@ -41,6 +41,13 @@ public:
     void setFrameCallback(FrameCallback callback);
 
     /**
+     * Clear the frame callback to prevent use-after-free.
+     * Also clears the transport's RxCallback.
+     * Must be called before deleting higher-layer objects.
+     */
+    void clearCallbacks();
+
+    /**
      * Send a frame with command and payload
      * @param cmd Command byte
      * @param payload Payload data (can be empty)
