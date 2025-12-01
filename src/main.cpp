@@ -3001,7 +3001,7 @@ String getWebPage() {
             <div class="card-header">
                 <h2 style="margin: 0; color: #1f2937;">Add New Service</h2>
                 <div class="backup-actions">
-                    <a href="/update" class="btn btn-secondary" target="_blank" rel="noopener noreferrer">OTA Update</a>
+                    <a href="/update" class="btn btn-secondary" target="_blank" rel="noopener noreferrer" title="Open firmware update page">OTA Update</a>
                     <button type="button" class="btn btn-secondary" onclick="exportServices()">Export Monitors</button>
                     <label class="btn btn-secondary" for="importFile">Import Monitors</label>
                     <input type="file" id="importFile" accept=".json" onchange="importServices(this.files[0])">
