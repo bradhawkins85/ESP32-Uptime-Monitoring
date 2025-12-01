@@ -1090,6 +1090,12 @@ bool checkHttpGet(Service& service) {
   // Use the URL field directly - supports both HTTP and HTTPS
   String url = service.url;
   
+  // Handle empty URL
+  if (url.length() == 0) {
+    service.lastError = "URL not configured";
+    return false;
+  }
+  
   // Handle HTTPS URLs by using WiFiClientSecure
   bool isSecure = url.startsWith("https://");
   
