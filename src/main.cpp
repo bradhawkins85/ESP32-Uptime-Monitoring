@@ -135,6 +135,7 @@ struct Service {
   int consecutiveFails;   // Current count of consecutive fails
   int failedChecksSinceAlert; // Failed checks since last alert (for re-arm)
   bool isUp;
+  bool hasBeenUp;         // Whether service has ever been UP since boot (for initial UP suppression)
   unsigned long lastCheck;
   unsigned long lastUptime;
   String lastError;
@@ -700,6 +701,7 @@ void initWebServer() {
       newService.consecutiveFails = 0;
       newService.failedChecksSinceAlert = 0;
       newService.isUp = false;
+      newService.hasBeenUp = false;
       newService.lastCheck = 0;
       newService.lastUptime = 0;
       newService.lastError = "";
@@ -906,6 +908,7 @@ void initWebServer() {
         newService.consecutiveFails = 0;
         newService.failedChecksSinceAlert = 0;
         newService.isUp = false;
+        newService.hasBeenUp = false;
         newService.lastCheck = 0;
         newService.lastUptime = 0;
         newService.lastError = "";
@@ -998,7 +1001,6 @@ void checkServices() {
       continue;
     }
 
-    bool firstCheck = services[i].lastCheck == 0;
     services[i].lastCheck = currentTime;
     bool wasUp = services[i].isUp;
 
@@ -1055,8 +1057,14 @@ void checkServices() {
       if (!services[i].isUp) {
         sendOfflineNotification(services[i]);
         services[i].failedChecksSinceAlert = 0;  // Reset counter after initial alert
-      } else if (!firstCheck) {
+      } else if (services[i].hasBeenUp) {
+        // Only send online notification if service was previously UP (not initial UP after boot)
         sendOnlineNotification(services[i]);
+      }
+      
+      // Mark that service has been UP at least once (for initial UP notification suppression)
+      if (services[i].isUp) {
+        services[i].hasBeenUp = true;
       }
     } else if (!services[i].isUp && !checkResult && services[i].rearmCount > 0) {
       // Service is still DOWN and check failed - handle re-arm logic
@@ -2321,6 +2329,7 @@ void loadServices() {
     services[serviceCount].consecutiveFails = 0;
     services[serviceCount].failedChecksSinceAlert = 0;
     services[serviceCount].isUp = false;
+    services[serviceCount].hasBeenUp = false;
     services[serviceCount].lastCheck = 0;
     services[serviceCount].lastUptime = 0;
     services[serviceCount].lastError = "";
