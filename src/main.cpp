@@ -19,6 +19,116 @@
 
 #include "config.hpp"
 
+// RGB LED Status Indicator
+// Uses the built-in RGB LED on ESP32-S3 DevKitC (GPIO 48)
+// LED states indicate system and service health at a glance
+
+enum LedStatus {
+  LED_STATUS_BOOTING,      // Blue pulsing - system booting, no checks yet
+  LED_STATUS_NO_WIFI,      // Orange - no WiFi connection
+  LED_STATUS_MESHCORE,     // White - communicating with MeshCore radio
+  LED_STATUS_ALL_UP,       // Green pulsing - all services are UP
+  LED_STATUS_ANY_DOWN      // Red pulsing - one or more services are DOWN
+};
+
+// Current LED state
+static LedStatus currentLedStatus = LED_STATUS_BOOTING;
+static unsigned long lastLedUpdate = 0;
+static bool ledPulseDirection = true;  // true = brightening, false = dimming
+static uint8_t ledBrightness = 0;
+
+// LED pulsing parameters
+const unsigned long LED_PULSE_INTERVAL_MS = 20;  // Update interval for smooth pulsing
+const uint8_t LED_PULSE_STEP = 5;               // Brightness change per step
+const uint8_t LED_MAX_BRIGHTNESS = 100;         // Max brightness (0-255)
+const uint8_t LED_MIN_BRIGHTNESS = 5;           // Min brightness for pulsing
+
+// Update RGB LED based on current status
+void updateLed() {
+  if (!LED_ENABLED) {
+    // If LED is disabled, turn it off
+    neopixelWrite(RGB_BUILTIN, 0, 0, 0);
+    return;
+  }
+
+  unsigned long now = millis();
+  
+  // Only update at the pulse interval for smooth animation
+  if (now - lastLedUpdate < LED_PULSE_INTERVAL_MS) {
+    return;
+  }
+  lastLedUpdate = now;
+
+  // Calculate pulsing brightness for states that pulse
+  bool shouldPulse = (currentLedStatus == LED_STATUS_BOOTING ||
+                      currentLedStatus == LED_STATUS_ALL_UP ||
+                      currentLedStatus == LED_STATUS_ANY_DOWN);
+  
+  if (shouldPulse) {
+    if (ledPulseDirection) {
+      ledBrightness += LED_PULSE_STEP;
+      if (ledBrightness >= LED_MAX_BRIGHTNESS) {
+        ledBrightness = LED_MAX_BRIGHTNESS;
+        ledPulseDirection = false;
+      }
+    } else {
+      if (ledBrightness > LED_PULSE_STEP + LED_MIN_BRIGHTNESS) {
+        ledBrightness -= LED_PULSE_STEP;
+      } else {
+        ledBrightness = LED_MIN_BRIGHTNESS;
+        ledPulseDirection = true;
+      }
+    }
+  } else {
+    // Non-pulsing states use steady brightness
+    ledBrightness = LED_MAX_BRIGHTNESS;
+  }
+
+  // Set color based on status
+  uint8_t r = 0, g = 0, b = 0;
+  
+  switch (currentLedStatus) {
+    case LED_STATUS_BOOTING:
+      // Blue pulsing
+      b = ledBrightness;
+      break;
+    case LED_STATUS_NO_WIFI:
+      // Orange (steady)
+      r = ledBrightness;
+      g = ledBrightness / 3;  // Orange = red + some green
+      break;
+    case LED_STATUS_MESHCORE:
+      // White (steady)
+      r = ledBrightness;
+      g = ledBrightness;
+      b = ledBrightness;
+      break;
+    case LED_STATUS_ALL_UP:
+      // Green pulsing
+      g = ledBrightness;
+      break;
+    case LED_STATUS_ANY_DOWN:
+      // Red pulsing
+      r = ledBrightness;
+      break;
+  }
+
+  neopixelWrite(RGB_BUILTIN, r, g, b);
+}
+
+// Set LED status and reset pulse state for smooth transition
+void setLedStatus(LedStatus status) {
+  if (currentLedStatus != status) {
+    currentLedStatus = status;
+    // Reset pulse for new status
+    ledBrightness = LED_MIN_BRIGHTNESS;
+    ledPulseDirection = true;
+    // Immediate update
+    lastLedUpdate = 0;
+    updateLed();
+  }
+}
+
 bool isNtfyConfigured() {
   return strlen(NTFY_TOPIC) > 0;
 }
@@ -263,6 +373,9 @@ void setup() {
 
   Serial.println("Starting ESP32 Uptime Monitor...");
 
+  // Initialize LED to booting state (blue pulsing)
+  setLedStatus(LED_STATUS_BOOTING);
+
   // Initialize filesystem
   initFileSystem();
 
@@ -291,7 +404,11 @@ void setup() {
 
 void loop() {
   static unsigned long lastCheckTime = 0;
+  static bool hasPerformedChecks = false;  // Track if any check has been performed
   unsigned long currentTime = millis();
+
+  // Update LED animation (call frequently for smooth pulsing)
+  updateLed();
 
   // Process pending MeshCore notifications from HTTP handlers
   // This runs in the main loop to avoid blocking the async web server
@@ -319,10 +436,35 @@ void loop() {
     return;
   }
 
+  // Update LED status based on WiFi and service state
+  // Priority: No WiFi > MeshCore > Service status
+  if (WiFi.status() != WL_CONNECTED) {
+    setLedStatus(LED_STATUS_NO_WIFI);
+  } else if (!hasPerformedChecks && serviceCount > 0) {
+    // Still booting - haven't done any checks yet
+    setLedStatus(LED_STATUS_BOOTING);
+  } else if (serviceCount == 0) {
+    // No services configured - show green (nothing to monitor)
+    setLedStatus(LED_STATUS_ALL_UP);
+  } else {
+    // Check if any enabled service is down
+    bool anyDown = false;
+    for (int i = 0; i < serviceCount; i++) {
+      if (services[i].enabled && !services[i].isUp && services[i].lastCheck > 0) {
+        anyDown = true;
+        break;
+      }
+    }
+    setLedStatus(anyDown ? LED_STATUS_ANY_DOWN : LED_STATUS_ALL_UP);
+  }
+
   // Check services every 5 seconds
   if (currentTime - lastCheckTime >= 5000) {
     checkServices();
     lastCheckTime = currentTime;
+    if (serviceCount > 0) {
+      hasPerformedChecks = true;
+    }
   }
 
   // Process notification queue for failed notifications (WiFi-based)
@@ -344,6 +486,8 @@ void initWiFi() {
     delay(1000);
     Serial.print(".");
     attempts++;
+    // Update LED during WiFi connection attempts
+    updateLed();
   }
 
   if (WiFi.status() == WL_CONNECTED) {
@@ -373,6 +517,8 @@ void initWiFi() {
     }
   } else {
     Serial.println("\nFailed to connect to WiFi!");
+    // Set LED to orange to indicate no WiFi
+    setLedStatus(LED_STATUS_NO_WIFI);
   }
 }
 
@@ -2037,6 +2183,9 @@ bool sendMeshCoreNotificationWithStatus(const String& title, const String& messa
   
   Serial.println("Starting MeshCore notification (BLE operation)...");
   
+  // Set LED to white to indicate MeshCore communication
+  setLedStatus(LED_STATUS_MESHCORE);
+  
   // Pause monitoring to prevent false positives during network transition
   monitoringPaused = true;
   bleOperationInProgress = true;
@@ -2259,12 +2408,16 @@ void processMeshCoreQueue() {
   
   Serial.println("Processing MeshCore queue (batched BLE operation)...");
   
+  // Set LED to white to indicate MeshCore communication
+  setLedStatus(LED_STATUS_MESHCORE);
+  
   // Pause monitoring to prevent false positives during network transition
   monitoringPaused = true;
   bleOperationInProgress = true;
   lastMeshCoreRetry = currentTime;
   
   // Disconnect WiFi before starting BLE
+  disconnectWiFi();
   disconnectWiFi();
   
   // Create the layered protocol stack on heap to reduce stack usage.
