@@ -978,6 +978,12 @@ String generatePushToken() {
 }
 
 void checkServices() {
+  // Skip all network-dependent checks if WiFi is not connected
+  // This prevents crashes from network operations when WiFi is unavailable
+  if (WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
   unsigned long currentTime = millis();
 
   for (int i = 0; i < serviceCount; i++) {
