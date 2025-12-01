@@ -20,6 +20,196 @@
 
 #include "config.hpp"
 
+// --- LCD and Touch Screen Support (Conditional) ---
+// Define HAS_LCD=1 in build flags to enable LCD/touch support
+// This is enabled for boards like the Guition ESP32-4848S040
+#ifdef HAS_LCD
+#define LGFX_USE_V1
+#include <LovyanGFX.hpp>
+#include <lgfx/v1/platforms/esp32s3/Panel_RGB.hpp>
+#include <lgfx/v1/platforms/esp32s3/Bus_RGB.hpp>
+
+// --- Display and touch configuration for ESP32-4848S040 ---
+#ifndef TFT_WIDTH
+#define TFT_WIDTH 480
+#endif
+
+#ifndef TFT_HEIGHT
+#define TFT_HEIGHT 480
+#endif
+
+#ifndef TFT_SCLK_PIN
+#define TFT_SCLK_PIN 48  // SPI clock for ST7701 initialization
+#endif
+
+#ifndef TFT_MOSI_PIN
+#define TFT_MOSI_PIN 47  // SPI data for ST7701 initialization
+#endif
+
+#ifndef TFT_MISO_PIN
+#define TFT_MISO_PIN -1
+#endif
+
+#ifndef TFT_CS_PIN
+#define TFT_CS_PIN 39   // LCD_CS per pinout (IO39)
+#endif
+
+#ifndef TFT_DC_PIN
+#define TFT_DC_PIN 9
+#endif
+
+#ifndef TFT_RST_PIN
+#define TFT_RST_PIN -1  // No hardware reset pin - uses software reset via SPI init
+#endif
+
+#ifndef TFT_BL_PIN
+#define TFT_BL_PIN 38   // Backlight control pin
+#endif
+
+#ifndef TOUCH_SDA_PIN
+#define TOUCH_SDA_PIN 19  // Touch I2C SDA
+#endif
+
+#ifndef TOUCH_SCL_PIN
+#define TOUCH_SCL_PIN 45  // Touch I2C SCL
+#endif
+
+#ifndef TOUCH_INT_PIN
+#define TOUCH_INT_PIN 40  // Touch interrupt pin
+#endif
+
+#ifndef TOUCH_RST_PIN
+// Touch reset pin - Hardware design note:
+// GPIO 38 is shared between touch reset and backlight control on this board.
+// The GT911 touch controller requires a reset pulse during initialization,
+// after which the pin is reconfigured for PWM backlight control by LovyanGFX.
+#define TOUCH_RST_PIN 38
+#endif
+
+// LGFX device configured for ST7701 parallel RGB (16-bit)
+class LGFX : public lgfx::LGFX_Device {
+  lgfx::Bus_RGB _bus_instance;
+  lgfx::Panel_ST7701_guition_esp32_4848S040 _panel_instance;
+  lgfx::Light_PWM _light_instance;
+  lgfx::Touch_GT911 _touch_instance;
+
+ public:
+  LGFX() {
+    // Panel configuration
+    {
+      auto cfg = _panel_instance.config();
+      cfg.memory_width  = TFT_WIDTH;
+      cfg.memory_height = TFT_HEIGHT;
+      cfg.panel_width   = TFT_WIDTH;
+      cfg.panel_height  = TFT_HEIGHT;
+      cfg.offset_x = 0;
+      cfg.offset_y = 0;
+      cfg.pin_rst = TFT_RST_PIN;
+      _panel_instance.config(cfg);
+    }
+
+    // Panel detail configuration (SPI pins for ST7701 initialization)
+    {
+      auto cfg = _panel_instance.config_detail();
+      cfg.pin_cs   = TFT_CS_PIN;
+      cfg.pin_sclk = TFT_SCLK_PIN;
+      cfg.pin_mosi = TFT_MOSI_PIN;
+      _panel_instance.config_detail(cfg);
+    }
+
+    // RGB Bus configuration
+    {
+      auto cfg = _bus_instance.config();
+      cfg.panel = &_panel_instance;
+      // Data pins d0..d15 mapped for ESP32-4848S040
+      cfg.pin_d0  = GPIO_NUM_4;   // DB1(B)  -> IO4
+      cfg.pin_d1  = GPIO_NUM_5;   // DB2(B)  -> IO5
+      cfg.pin_d2  = GPIO_NUM_6;   // DB3(B)  -> IO6
+      cfg.pin_d3  = GPIO_NUM_7;   // DB4(B)  -> IO7
+      cfg.pin_d4  = GPIO_NUM_15;  // DB5(B)  -> IO15
+      cfg.pin_d5  = GPIO_NUM_8;   // DB6(G)  -> IO8
+      cfg.pin_d6  = GPIO_NUM_20;  // DB7(G)  -> IO20
+      cfg.pin_d7  = GPIO_NUM_3;   // DB8(G)  -> IO3
+      cfg.pin_d8  = GPIO_NUM_46;  // DB9(G)  -> IO46
+      cfg.pin_d9  = GPIO_NUM_9;   // DB10(G) -> IO9
+      cfg.pin_d10 = GPIO_NUM_10;  // DB11(R) -> IO10
+      cfg.pin_d11 = GPIO_NUM_11;  // DB13(R) -> IO11
+      cfg.pin_d12 = GPIO_NUM_12;  // DB14(R) -> IO12
+      cfg.pin_d13 = GPIO_NUM_13;  // DB15(R) -> IO13
+      cfg.pin_d14 = GPIO_NUM_14;  // DB16(R) -> IO14
+      cfg.pin_d15 = GPIO_NUM_0;   // DB17(R) -> IO0
+
+      // Control / timing pins
+      cfg.pin_henable = GPIO_NUM_18;  // DE    -> IO18
+      cfg.pin_vsync   = GPIO_NUM_17;  // VSYNC -> IO17
+      cfg.pin_hsync   = GPIO_NUM_16;  // HSYNC -> IO16
+      cfg.pin_pclk    = GPIO_NUM_21;  // PCLK  -> IO21
+
+      cfg.freq_write = 16000000; // 16MHz for RGB bus
+
+      // Timing parameters for ST7701 display
+      cfg.hsync_polarity    = 0;
+      cfg.hsync_front_porch = 8;
+      cfg.hsync_pulse_width = 4;
+      cfg.hsync_back_porch  = 8;
+      cfg.vsync_polarity    = 0;
+      cfg.vsync_front_porch = 8;
+      cfg.vsync_pulse_width = 4;
+      cfg.vsync_back_porch  = 8;
+      cfg.pclk_idle_high    = 0;
+      cfg.de_idle_high      = 0;
+
+      _bus_instance.config(cfg);
+    }
+    _panel_instance.setBus(&_bus_instance);
+
+    // Backlight (PWM)
+    {
+      auto cfg = _light_instance.config();
+      cfg.pin_bl = TFT_BL_PIN;
+      _light_instance.config(cfg);
+    }
+    _panel_instance.light(&_light_instance);
+
+    // GT911 Touch controller configuration
+    {
+      auto cfg = _touch_instance.config();
+      cfg.x_min = 0;
+      cfg.x_max = TFT_WIDTH - 1;
+      cfg.y_min = 0;
+      cfg.y_max = TFT_HEIGHT - 1;
+      cfg.pin_int = TOUCH_INT_PIN;
+      cfg.pin_rst = TOUCH_RST_PIN;
+      cfg.bus_shared = false;
+      cfg.offset_rotation = 0;
+      cfg.i2c_port = 1;
+      cfg.i2c_addr = 0x5D;  // GT911 default address
+      cfg.pin_sda = TOUCH_SDA_PIN;
+      cfg.pin_scl = TOUCH_SCL_PIN;
+      cfg.freq = 400000;
+      _touch_instance.config(cfg);
+      _panel_instance.setTouch(&_touch_instance);
+    }
+
+    setPanel(&_panel_instance);
+  }
+};
+
+// LCD display instance and state variables
+static LGFX display;
+static bool displayReady = false;
+static bool touchReady = false;
+static int currentServiceIndex = 0;
+static bool displayNeedsUpdate = true;
+static unsigned long lastDisplaySwitch = 0;
+static const unsigned long DISPLAY_ROTATION_INTERVAL = 8000;
+
+// Function prototypes for LCD
+void initDisplay();
+void renderServiceOnDisplay();
+void handleDisplayLoop();
+#endif // HAS_LCD
+
 // RGB LED Status Indicator
 // Uses the built-in RGB LED on ESP32-S3 DevKitC (GPIO 48)
 // LED states indicate system and service health at a glance
@@ -398,6 +588,11 @@ void setup() {
     }
   }
 
+#ifdef HAS_LCD
+  // Initialize display and touch controller (if connected)
+  initDisplay();
+#endif
+
   Serial.println("System ready!");
   Serial.print("Access web interface at: http://");
   Serial.println(WiFi.localIP());
@@ -476,6 +671,11 @@ void loop() {
   
   // Handle OTA update events
   ElegantOTA.loop();
+
+#ifdef HAS_LCD
+  // Handle LCD display updates and touch input
+  handleDisplayLoop();
+#endif
 
   delay(10);
 }
@@ -1348,6 +1548,10 @@ void checkServices() {
       if (services[i].isUp) {
         services[i].hasBeenUp = true;
       }
+
+#ifdef HAS_LCD
+      displayNeedsUpdate = true;
+#endif
     } else if (!services[i].isUp && !checkResult && services[i].rearmCount > 0) {
       // Service is still DOWN and check failed - handle re-arm logic
       services[i].failedChecksSinceAlert++;
@@ -1358,6 +1562,13 @@ void checkServices() {
         services[i].failedChecksSinceAlert = 0;  // Reset counter after re-arm alert
       }
     }
+
+#ifdef HAS_LCD
+    // Update display if the currently shown service was checked
+    if (i == currentServiceIndex) {
+      displayNeedsUpdate = true;
+    }
+#endif
   }
 }
 
@@ -2647,6 +2858,218 @@ String getServiceTypeString(ServiceType type) {
     default: return "unknown";
   }
 }
+
+// --- LCD and Touch Screen Functions (Conditional) ---
+#ifdef HAS_LCD
+
+void initDisplay() {
+  Serial.println("Initializing display...");
+  
+  // Reset the GT911 touch controller before display initialization.
+  // Hardware note: On ESP32-4848S040, GPIO 38 is shared between touch reset and backlight.
+  // This reset sequence is required for proper GT911 I2C communication.
+  if (TOUCH_RST_PIN >= 0) {
+    pinMode(TOUCH_RST_PIN, OUTPUT);
+    digitalWrite(TOUCH_RST_PIN, LOW);
+    delay(10);  // GT911 requires minimum 10ms reset pulse
+    digitalWrite(TOUCH_RST_PIN, HIGH);
+    delay(50);  // Wait for GT911 to complete internal initialization
+    Serial.println("GT911 touch controller reset complete");
+  }
+  
+  displayReady = display.init();
+  display.setRotation(0);  // Rotation 0 for ESP32-4848S040 square display
+  display.setTextSize(2);
+  display.setTextColor(TFT_WHITE, TFT_BLACK);
+
+  if (TFT_BL_PIN >= 0) {
+    display.setBrightness(200);
+  }
+
+  // Touch controller is initialized as part of the LGFX class (GT911)
+  touchReady = display.touch() != nullptr;
+
+  if (touchReady) {
+    Serial.println("Touch controller (GT911) ready");
+  } else {
+    Serial.println("Touch controller not detected");
+  }
+
+  if (displayReady) {
+    display.fillScreen(TFT_BLACK);
+    renderServiceOnDisplay();
+    lastDisplaySwitch = millis();
+    Serial.println("Display initialized successfully");
+  } else {
+    Serial.println("Display initialization failed");
+  }
+}
+
+void renderServiceOnDisplay() {
+  if (!displayReady) return;
+
+  display.fillScreen(TFT_BLACK);
+
+  int16_t width = display.width();
+  int16_t height = display.height();
+
+  // Header with IP address
+  display.setTextColor(TFT_CYAN, TFT_BLACK);
+  display.setCursor(10, 10);
+  display.setTextSize(2);
+  if (WiFi.status() == WL_CONNECTED) {
+    String header = "ESP32 Monitor - " + WiFi.localIP().toString();
+    display.println(header);
+  } else {
+    display.println("ESP32 Monitor - No WiFi");
+  }
+
+  // Show message if no services configured
+  if (serviceCount == 0) {
+    display.setCursor(10, 60);
+    display.setTextColor(TFT_WHITE, TFT_BLACK);
+    display.println("No services configured.");
+    display.println("Add services via web UI.");
+    return;
+  }
+
+  // Ensure index is valid
+  if (currentServiceIndex >= serviceCount) {
+    currentServiceIndex = 0;
+  }
+
+  Service& svc = services[currentServiceIndex];
+  String status = svc.isUp ? "UP" : "DOWN";
+  uint16_t statusColor = svc.isUp ? TFT_GREEN : TFT_RED;
+
+  // Service name with pagination
+  display.setTextSize(3);
+  display.setTextColor(TFT_WHITE, TFT_BLACK);
+  display.setCursor(10, 50);
+  display.printf("%s (%d/%d)", svc.name.c_str(), currentServiceIndex + 1, serviceCount);
+
+  // Status box
+  display.fillRoundRect(10, 90, width - 20, 60, 12, TFT_NAVY);
+  display.setTextSize(2);
+  display.setCursor(20, 110);
+  display.setTextColor(statusColor, TFT_NAVY);
+  display.printf("Status: %s", status.c_str());
+
+  // Service type
+  display.setCursor(20, 150);
+  display.setTextColor(TFT_YELLOW, TFT_BLACK);
+  display.printf("Type: %s", getServiceTypeString(svc.type).c_str());
+
+  // Host information (not applicable for PUSH type)
+  if (svc.type != TYPE_PUSH) {
+    display.setCursor(20, 180);
+    display.setTextColor(TFT_WHITE, TFT_BLACK);
+    if (svc.type == TYPE_HTTP_GET && svc.url.length() > 0) {
+      // For HTTP GET, show URL (truncated if too long)
+      String urlDisplay = svc.url;
+      if (urlDisplay.length() > 30) {
+        urlDisplay = urlDisplay.substring(0, 27) + "...";
+      }
+      display.printf("URL: %s", urlDisplay.c_str());
+    } else if (svc.type == TYPE_PING) {
+      display.printf("Host: %s", svc.host.c_str());
+    } else {
+      display.printf("Host: %s:%d", svc.host.c_str(), svc.port);
+    }
+  }
+
+  // Last check timestamp
+  unsigned long sinceCheck = svc.lastCheck > 0 ? (millis() - svc.lastCheck) / 1000 : 0;
+  display.setCursor(20, 210);
+  display.setTextColor(TFT_WHITE, TFT_BLACK);
+  if (svc.lastCheck == 0) {
+    display.println("Last check: pending");
+  } else {
+    display.printf("Last check: %lus ago", sinceCheck);
+  }
+
+  // Show enabled/paused status
+  display.setCursor(20, 240);
+  if (!svc.enabled) {
+    display.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    display.println("Status: Disabled");
+  } else if (svc.pauseUntil > 0) {
+    unsigned long remaining = getPauseRemainingMs(svc.pauseUntil, millis());
+    if (remaining > 0) {
+      display.setTextColor(TFT_ORANGE, TFT_BLACK);
+      display.printf("Paused: %lus remaining", remaining / 1000);
+    }
+  }
+
+  // Error message if present
+  if (svc.lastError.length() > 0) {
+    display.setCursor(20, 270);
+    display.setTextColor(TFT_RED, TFT_BLACK);
+    // Truncate error message if too long
+    String errorDisplay = svc.lastError;
+    if (errorDisplay.length() > 35) {
+      errorDisplay = errorDisplay.substring(0, 32) + "...";
+    }
+    display.printf("Error: %s", errorDisplay.c_str());
+  }
+
+  // Navigation instructions at bottom
+  display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  display.setCursor(10, height - 60);
+  display.println("Tap left/right to switch");
+  display.setCursor(10, height - 30);
+  display.printf("Auto-rotate every %lus", DISPLAY_ROTATION_INTERVAL / 1000);
+}
+
+void handleDisplayLoop() {
+  if (!displayReady) return;
+
+  unsigned long now = millis();
+
+  // Auto-rotate through services
+  if (serviceCount > 0 && now - lastDisplaySwitch >= DISPLAY_ROTATION_INTERVAL) {
+    currentServiceIndex = (currentServiceIndex + 1) % serviceCount;
+    displayNeedsUpdate = true;
+    lastDisplaySwitch = now;
+  }
+
+  // Handle touch input for manual navigation
+  if (touchReady && serviceCount > 0) {
+    lgfx::touch_point_t tp;
+    int touchCount = display.getTouch(&tp, 1);
+    
+    if (touchCount > 0) {
+      int16_t x = tp.x;
+      int16_t y = tp.y;
+
+      // Only respond to touches below the header area
+      if (y > 20) {
+        if (x < display.width() / 2) {
+          // Left side - previous service
+          currentServiceIndex = (currentServiceIndex - 1 + serviceCount) % serviceCount;
+        } else {
+          // Right side - next service
+          currentServiceIndex = (currentServiceIndex + 1) % serviceCount;
+        }
+        displayNeedsUpdate = true;
+        lastDisplaySwitch = now;
+        
+        // Wait for touch release to prevent multiple triggers
+        while (display.getTouch(&tp, 1) > 0) {
+          delay(50);
+        }
+      }
+    }
+  }
+
+  // Update display if needed
+  if (displayNeedsUpdate) {
+    renderServiceOnDisplay();
+    displayNeedsUpdate = false;
+  }
+}
+
+#endif // HAS_LCD
 
 String getWebPage() {
   return R"rawliteral(

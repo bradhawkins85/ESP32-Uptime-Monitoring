@@ -14,10 +14,41 @@ It serves as a framework to monitor services where support can be hardcoded as a
 - Optional **Discord webhook notifications** for service up/down events
 - Optional **SMTP email notifications** for service up/down events
 - **RGB LED status indicator** - Visual feedback on system and service health
+- **LCD and Touch Screen support** - Optional hardware display for viewing service status (on supported boards)
 - Web-based UI for adding and managing services
 - Persistent storage using LittleFS
 - **Export/Import** monitor configurations for backup and restore
 - **OTA Updates** - Update firmware via web interface without USB connection
+
+## Supported Boards
+
+The firmware supports multiple ESP32-S3 based boards. Select the appropriate environment when building with PlatformIO:
+
+| Board | Environment | Display | Description |
+|-------|-------------|---------|-------------|
+| ESP32-S3 DevKitC-1 N16R8 | `esp32-n16r8` | None | Standard ESP32-S3 development board with 16MB flash. RGB LED for status indication. |
+| Guition ESP32-4848S040 | `esp32-4848S040` | 480x480 LCD + Touch | ESP32-S3 with 4" square IPS display and GT911 touch controller. Service status is shown on the display. |
+
+### Building for a Specific Board
+
+To build for a specific board, use the `-e` flag with the environment name:
+
+```bash
+# For ESP32-S3 DevKitC-1 N16R8 (no display)
+pio run -e esp32-n16r8
+
+# For Guition ESP32-4848S040 (with LCD and touch)
+pio run -e esp32-4848S040
+```
+
+### LCD Display Features (ESP32-4848S040)
+
+When using the Guition ESP32-4848S040 board, the firmware provides:
+
+- **Service Status Display**: Shows the current service name, status (UP/DOWN), host information, and last check time
+- **Touch Navigation**: Tap the left half of the screen to view the previous service, tap the right half for the next service
+- **Auto-Rotation**: Automatically cycles through services every 8 seconds
+- **Visual Indicators**: Color-coded status (green for UP, red for DOWN), with error messages displayed when available
 
 ## RGB LED Status Indicator
 
@@ -216,7 +247,9 @@ Optionally send a notification to all configured channels when the device boots 
 
 ### Connect Your ESP32 Board
 
-1. Connect your ESP32 board to your computer using a USB cable (this project is configured for ESP32-S3-DevKitC-1-N16R8, but other ESP32 boards may work with minor configuration changes)
+1. Connect your ESP32 board to your computer using a USB cable. Supported boards include:
+   - ESP32-S3-DevKitC-1-N16R8 (environment: `esp32-n16r8`)
+   - Guition ESP32-4848S040 with 480x480 LCD (environment: `esp32-4848S040`)
 2. The board should be automatically detected by your system
 3. On Linux, you may need to add your user to the `dialout` group:
    ```bash
@@ -229,7 +262,7 @@ Optionally send a notification to all configured channels when the device boots 
 1. Open the project folder in VS Code
 2. Wait for PlatformIO to initialize (you'll see a progress indicator in the status bar)
 3. Click the PlatformIO icon in the left sidebar
-4. Under "Project Tasks" > "esp32-n16r8":
+4. Under "Project Tasks", select your board environment (`esp32-n16r8` or `esp32-4848S040`):
    - Click **Build** to compile the firmware
    - Click **Upload** to flash the firmware to your ESP32
    - Click **Monitor** to view serial output
@@ -243,11 +276,15 @@ Alternatively, use the keyboard shortcuts:
 Navigate to the project directory and run:
 
 ```bash
-# Build the firmware
+# Build the firmware (builds all environments by default)
 pio run
 
-# Upload to the ESP32
-pio run --target upload
+# Build for a specific board
+pio run -e esp32-n16r8         # For ESP32-S3 DevKitC (no display)
+pio run -e esp32-4848S040      # For Guition ESP32-4848S040 (with LCD)
+
+# Upload to the ESP32 (specify environment with -e)
+pio run -e esp32-n16r8 --target upload
 
 # Monitor serial output
 pio device monitor
@@ -256,7 +293,7 @@ pio device monitor
 Or combine build and upload in one command:
 
 ```bash
-pio run --target upload && pio device monitor
+pio run -e esp32-n16r8 --target upload && pio device monitor
 ```
 
 ## Monitoring Serial Output
@@ -338,11 +375,13 @@ The ESP32 Uptime Monitor supports firmware updates via the web interface, elimin
 For OTA updates, you only need the `firmware.bin` file. This is automatically generated when you build the project:
 
 ```bash
-# Build firmware
-pio run
+# Build firmware for your board
+pio run -e esp32-n16r8         # For ESP32-S3 DevKitC
+pio run -e esp32-4848S040      # For Guition ESP32-4848S040
 
 # The binary is at:
-# .pio/build/esp32-n16r8/firmware.bin
+# .pio/build/esp32-n16r8/firmware.bin       (for esp32-n16r8)
+# .pio/build/esp32-4848S040/firmware.bin    (for esp32-4848S040)
 ```
 
 ### Security Considerations
