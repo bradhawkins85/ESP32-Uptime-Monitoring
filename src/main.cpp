@@ -125,6 +125,7 @@ struct Service {
   String host;
   int port;
   String path;
+  String url;             // Full URL for HTTP GET (http:// or https://)
   String expectedResponse;
   int checkInterval;
   int passThreshold;      // Number of consecutive passes required to mark as UP
@@ -590,6 +591,7 @@ void initWebServer() {
       obj["host"] = services[i].host;
       obj["port"] = services[i].port;
       obj["path"] = services[i].path;
+      obj["url"] = services[i].url;
       obj["expectedResponse"] = services[i].expectedResponse;
       obj["checkInterval"] = services[i].checkInterval;
       obj["passThreshold"] = services[i].passThreshold;
@@ -657,6 +659,7 @@ void initWebServer() {
       newService.host = doc["host"].as<String>();
       newService.port = doc["port"] | 80;
       newService.path = doc["path"] | "/";
+      newService.url = doc["url"].as<String>();
       newService.expectedResponse = doc["expectedResponse"] | "*";
       newService.checkInterval = doc["checkInterval"] | 60;
 
@@ -755,6 +758,7 @@ void initWebServer() {
       obj["host"] = services[i].host;
       obj["port"] = services[i].port;
       obj["path"] = services[i].path;
+      obj["url"] = services[i].url;
       obj["expectedResponse"] = services[i].expectedResponse;
       obj["checkInterval"] = services[i].checkInterval;
       obj["passThreshold"] = services[i].passThreshold;
@@ -868,6 +872,7 @@ void initWebServer() {
         newService.host = host;
         newService.port = port;
         newService.path = obj["path"] | "/";
+        newService.url = obj["url"] | "";
         newService.expectedResponse = obj["expectedResponse"] | "*";
         newService.checkInterval = checkInterval;
         newService.passThreshold = passThreshold;
@@ -1076,9 +1081,21 @@ int matchesRegex(const String& text, const String& pattern) {
 
 bool checkHttpGet(Service& service) {
   HTTPClient http;
-  String url = "http://" + service.host + ":" + String(service.port) + service.path;
-
-  http.begin(url);
+  
+  // Use the URL field directly - supports both HTTP and HTTPS
+  String url = service.url;
+  
+  // Handle HTTPS URLs by using WiFiClientSecure
+  WiFiClientSecure secureClient;
+  bool isSecure = url.startsWith("https://");
+  
+  if (isSecure) {
+    secureClient.setInsecure();  // Skip certificate validation
+    http.begin(secureClient, url);
+  } else {
+    http.begin(url);
+  }
+  
   http.setTimeout(5000);
 
   int httpCode = http.GET();
@@ -2191,6 +2208,7 @@ void saveServices() {
     obj["host"] = services[i].host;
     obj["port"] = services[i].port;
     obj["path"] = services[i].path;
+    obj["url"] = services[i].url;
     obj["expectedResponse"] = services[i].expectedResponse;
     obj["checkInterval"] = services[i].checkInterval;
     obj["passThreshold"] = services[i].passThreshold;
@@ -2240,6 +2258,15 @@ void loadServices() {
     services[serviceCount].host = obj["host"].as<String>();
     services[serviceCount].port = obj["port"];
     services[serviceCount].path = obj["path"].as<String>();
+    services[serviceCount].url = obj["url"] | "";
+    // Backward compatibility: generate URL from host/port/path if URL is empty
+    if (services[serviceCount].url.length() == 0 && 
+        services[serviceCount].type == TYPE_HTTP_GET &&
+        services[serviceCount].host.length() > 0) {
+      services[serviceCount].url = "http://" + services[serviceCount].host + 
+                                   ":" + String(services[serviceCount].port) + 
+                                   services[serviceCount].path;
+    }
     services[serviceCount].expectedResponse = obj["expectedResponse"].as<String>();
     services[serviceCount].checkInterval = obj["checkInterval"];
     services[serviceCount].passThreshold = obj["passThreshold"] | 1;
@@ -2610,6 +2637,11 @@ String getWebPage() {
                     </div>
                 </div>
 
+                <div class="form-group" id="urlGroup">
+                    <label for="serviceUrl">URL (http:// or https://)</label>
+                    <input type="url" id="serviceUrl" placeholder="https://example.com/health" title="Full URL including protocol (http:// or https://)">
+                </div>
+
                 <div class="form-row">
                     <div class="form-group" id="portGroup">
                         <label for="servicePort">Port</label>
@@ -2639,7 +2671,7 @@ String getWebPage() {
                     <input type="number" id="rearmCount" value="0" required min="0" title="Number of failed checks before re-alerting while service is DOWN. Set to 0 to disable.">
                 </div>
 
-                <div class="form-group" id="pathGroup">
+                <div class="form-group hidden" id="pathGroup">
                     <label for="servicePath">Path</label>
                     <input type="text" id="servicePath" value="/" placeholder="/">
                 </div>
@@ -2698,6 +2730,8 @@ String getWebPage() {
             const type = this.value;
             const hostGroup = document.getElementById('hostGroup');
             const hostInput = document.getElementById('serviceHost');
+            const urlGroup = document.getElementById('urlGroup');
+            const urlInput = document.getElementById('serviceUrl');
             const pathGroup = document.getElementById('pathGroup');
             const responseGroup = document.getElementById('responseGroup');
             const portGroup = document.getElementById('portGroup');
@@ -2706,10 +2740,24 @@ String getWebPage() {
             const snmpCommunityGroup = document.getElementById('snmpCommunityGroup');
             const snmpCompareGroup = document.getElementById('snmpCompareGroup');
 
-            if (type === 'push') {
-                // Push type doesn't need host/port/path
+            if (type === 'http_get') {
+                // HTTP GET uses URL field only
                 hostGroup.classList.add('hidden');
                 hostInput.removeAttribute('required');
+                urlGroup.classList.remove('hidden');
+                urlInput.setAttribute('required', '');
+                portGroup.classList.add('hidden');
+                pathGroup.classList.add('hidden');
+                responseGroup.classList.remove('hidden');
+                snmpOidGroup.classList.add('hidden');
+                snmpCommunityGroup.classList.add('hidden');
+                snmpCompareGroup.classList.add('hidden');
+            } else if (type === 'push') {
+                // Push type doesn't need host/port/path/url
+                hostGroup.classList.add('hidden');
+                hostInput.removeAttribute('required');
+                urlGroup.classList.add('hidden');
+                urlInput.removeAttribute('required');
                 portGroup.classList.add('hidden');
                 pathGroup.classList.add('hidden');
                 responseGroup.classList.add('hidden');
@@ -2719,6 +2767,8 @@ String getWebPage() {
             } else if (type === 'ping') {
                 hostGroup.classList.remove('hidden');
                 hostInput.setAttribute('required', '');
+                urlGroup.classList.add('hidden');
+                urlInput.removeAttribute('required');
                 portGroup.classList.add('hidden');
                 pathGroup.classList.add('hidden');
                 responseGroup.classList.add('hidden');
@@ -2728,6 +2778,8 @@ String getWebPage() {
             } else if (type === 'port') {
                 hostGroup.classList.remove('hidden');
                 hostInput.setAttribute('required', '');
+                urlGroup.classList.add('hidden');
+                urlInput.removeAttribute('required');
                 portGroup.classList.remove('hidden');
                 pathGroup.classList.add('hidden');
                 responseGroup.classList.add('hidden');
@@ -2738,6 +2790,8 @@ String getWebPage() {
             } else if (type === 'snmp_get') {
                 hostGroup.classList.remove('hidden');
                 hostInput.setAttribute('required', '');
+                urlGroup.classList.add('hidden');
+                urlInput.removeAttribute('required');
                 portGroup.classList.remove('hidden');
                 pathGroup.classList.add('hidden');
                 responseGroup.classList.add('hidden');
@@ -2745,24 +2799,6 @@ String getWebPage() {
                 snmpCommunityGroup.classList.remove('hidden');
                 snmpCompareGroup.classList.remove('hidden');
                 portInput.value = 161;
-            } else {
-                // http_get
-                hostGroup.classList.remove('hidden');
-                hostInput.setAttribute('required', '');
-                portGroup.classList.remove('hidden');
-                pathGroup.classList.remove('hidden');
-                snmpOidGroup.classList.add('hidden');
-                snmpCommunityGroup.classList.add('hidden');
-                snmpCompareGroup.classList.add('hidden');
-
-                if (type === 'http_get') {
-                    responseGroup.classList.remove('hidden');
-                } else {
-                    responseGroup.classList.add('hidden');
-                }
-
-                // Set default port for HTTP-based service types
-                portInput.value = 80;
             }
         });
 
@@ -2774,8 +2810,9 @@ String getWebPage() {
                 name: document.getElementById('serviceName').value,
                 type: document.getElementById('serviceType').value,
                 host: document.getElementById('serviceHost').value,
-                port: parseInt(document.getElementById('servicePort').value),
+                port: parseInt(document.getElementById('servicePort').value) || 80,
                 path: document.getElementById('servicePath').value,
+                url: document.getElementById('serviceUrl').value,
                 expectedResponse: document.getElementById('expectedResponse').value,
                 checkInterval: parseInt(document.getElementById('checkInterval').value),
                 passThreshold: parseInt(document.getElementById('passThreshold').value),
@@ -2881,9 +2918,19 @@ String getWebPage() {
                     `;
                 }
 
-                // Build host info - not applicable for push type
+                // Build URL info for http_get type
+                let urlInfo = '';
+                if (service.type === 'http_get' && service.url) {
+                    urlInfo = `
+                        <div class="service-info">
+                            <strong>URL:</strong> <span style="word-break: break-all;">${service.url}</span>
+                        </div>
+                    `;
+                }
+
+                // Build host info - not applicable for push or http_get type
                 let hostInfo = '';
-                if (service.type !== 'push') {
+                if (service.type !== 'push' && service.type !== 'http_get') {
                     hostInfo = `
                         <div class="service-info">
                             <strong>Host:</strong> ${service.host}${service.type !== 'ping' ? ':' + service.port : ''}
@@ -2902,12 +2949,8 @@ String getWebPage() {
                                 ${service.isUp ? 'UP' : 'DOWN'}
                             </span>
                         </div>
+                        ${urlInfo}
                         ${hostInfo}
-                        ${service.path && service.type !== 'ping' && service.type !== 'snmp_get' && service.type !== 'port' && service.type !== 'push' ? `
-                        <div class="service-info">
-                            <strong>Path:</strong> ${service.path}
-                        </div>
-                        ` : ''}
                         ${snmpInfo}
                         ${pushInfo}
                         <div class="service-info">
