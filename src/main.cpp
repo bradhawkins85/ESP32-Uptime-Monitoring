@@ -2941,8 +2941,21 @@ void renderServiceOnDisplay() {
   }
 
   Service& svc = services[currentServiceIndex];
-  String status = svc.isUp ? "UP" : "DOWN";
-  uint16_t statusColor = svc.isUp ? TFT_GREEN : TFT_RED;
+  
+  // Determine status text and color based on check state
+  String status;
+  uint16_t statusColor;
+  if (svc.lastCheck == 0) {
+    // Service hasn't been checked yet
+    status = "PENDING";
+    statusColor = TFT_BLUE;
+  } else if (svc.isUp) {
+    status = "UP";
+    statusColor = TFT_GREEN;
+  } else {
+    status = "DOWN";
+    statusColor = TFT_RED;
+  }
 
   // Service name with pagination
   display.setTextSize(3);
@@ -3254,6 +3267,10 @@ String getWebPage() {
             opacity: 0.8;
         }
 
+        .service-card.pending {
+            border-left-color: #6366f1;
+        }
+
         .service-card:hover {
             transform: translateY(-4px);
             box-shadow: 0 4px 12px rgba(0,0,0,0.15);
@@ -3288,6 +3305,11 @@ String getWebPage() {
         .service-status.down {
             background: #fee2e2;
             color: #991b1b;
+        }
+
+        .service-status.pending {
+            background: #e0e7ff;
+            color: #3730a3;
         }
 
         .service-info {
@@ -3764,10 +3786,24 @@ String getWebPage() {
                     statusInfo = `<div class="service-info" style="color: #f59e0b;"><strong>Status:</strong> Paused (${pauseStr} remaining)</div>`;
                 }
 
-                // Determine service card class based on enabled/paused state
+                // Determine if service is pending (never checked)
+                const isPending = service.secondsSinceLastCheck < 0;
+
+                // Determine service card class based on enabled/paused/pending state
                 let cardClass = service.isUp ? 'up' : 'down';
+                if (isPending) {
+                    cardClass = 'pending';
+                }
                 if (!service.enabled || service.pauseRemaining > 0) {
                     cardClass = 'paused';
+                }
+
+                // Determine status text and class
+                let statusText = service.isUp ? 'UP' : 'DOWN';
+                let statusClass = service.isUp ? 'up' : 'down';
+                if (isPending) {
+                    statusText = 'PENDING';
+                    statusClass = 'pending';
                 }
 
                 return `
@@ -3777,8 +3813,8 @@ String getWebPage() {
                                 <div class="service-name">${service.name}</div>
                                 <div class="type-badge">${service.type.replace('_', ' ').toUpperCase()}</div>
                             </div>
-                            <span class="service-status ${service.isUp ? 'up' : 'down'}">
-                                ${service.isUp ? 'UP' : 'DOWN'}
+                            <span class="service-status ${statusClass}">
+                                ${statusText}
                             </span>
                         </div>
                         ${statusInfo}
