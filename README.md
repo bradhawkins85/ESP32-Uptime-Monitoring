@@ -26,7 +26,7 @@ The firmware supports multiple ESP32-S3 based boards. Select the appropriate env
 
 | Board | Environment | Display | Description | Image |
 |-------|-------------|---------|-------------|-------|
-| ESP32-S3 DevKitC-1 N16R8 | `esp32-n16r8` | None | Standard ESP32-S3 development board with 16MB flash. RGB LED for status indication. | |<img width="1157" height="535" alt="image" src="https://github.com/user-attachments/assets/e98f1114-bf9c-4410-9d24-9c2305644fb6" /> |
+| ESP32-S3 DevKitC-1 N16R8 | `esp32-n16r8` | None | Standard ESP32-S3 development board with 16MB flash. RGB LED for status indication. | <img width="1157" height="535" alt="image" src="https://github.com/user-attachments/assets/e98f1114-bf9c-4410-9d24-9c2305644fb6" /> |
 
 | Guition ESP32-4848S040 | `esp32-4848S040` | 480x480 LCD + Touch | ESP32-S3 with 4" square IPS display and GT911 touch controller. Service status is shown on the display. |
 
