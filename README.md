@@ -347,7 +347,8 @@ pio run
 
 ### Security Considerations
 
-- If HTTP Basic Authentication is enabled (via `WEB_AUTH_USERNAME` and `WEB_AUTH_PASSWORD`), credentials will be required to access the main web interface, but the OTA update page at `/update` is not protected by default
+- If HTTP Basic Authentication is enabled (via `WEB_AUTH_USERNAME` and `WEB_AUTH_PASSWORD`), the same credentials are required to access the OTA update page at `/update`
+- If authentication is not configured, the OTA update page will be accessible without credentials
 - Consider restricting network access to the ESP32 if security is a concern
 - Always backup your monitor configurations before performing firmware updates
 

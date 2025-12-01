@@ -1226,7 +1226,12 @@ void initWebServer() {
 
   // Initialize ElegantOTA for firmware updates via web interface
   // Access the update page at /update
-  ElegantOTA.begin(&server);
+  // Use existing web authentication credentials if configured
+  if (strlen(WEB_AUTH_USERNAME) > 0 && strlen(WEB_AUTH_PASSWORD) > 0) {
+    ElegantOTA.begin(&server, WEB_AUTH_USERNAME, WEB_AUTH_PASSWORD);
+  } else {
+    ElegantOTA.begin(&server);
+  }
   
   server.begin();
   Serial.println("Web server started");
