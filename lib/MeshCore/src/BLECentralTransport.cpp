@@ -164,6 +164,13 @@ bool BLECentralTransport::send(const uint8_t* data, size_t len) {
         std::vector<uint8_t> buffer(data, data + len);
         // Use Write With Response for reliable protocol commands
         m_txCharacteristic->writeValue(buffer.data(), buffer.size(), true);
+        
+        // Yield to the scheduler after BLE write to prevent Task Watchdog Timer reset.
+        // The writeValue() call with response=true blocks until the peripheral acknowledges,
+        // which can take variable time depending on BLE connection parameters and peripheral
+        // processing. This delay ensures the FreeRTOS scheduler can run and feed the watchdog.
+        vTaskDelay(pdMS_TO_TICKS(10));
+        
         return true;
     } catch (...) {
         Serial.println("BLECentralTransport: write error");
