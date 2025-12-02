@@ -183,7 +183,7 @@ class LGFX : public lgfx::LGFX_Device {
       cfg.bus_shared = false;
       cfg.offset_rotation = 0;
       cfg.i2c_port = 1;
-      cfg.i2c_addr = 0x5D;  // GT911 default address
+      cfg.i2c_addr = 0x14;  // GT911 address when INT is HIGH during reset
       cfg.pin_sda = TOUCH_SDA_PIN;
       cfg.pin_scl = TOUCH_SCL_PIN;
       cfg.freq = 400000;
@@ -2928,16 +2928,34 @@ String getServiceTypeString(ServiceType type) {
 void initDisplay() {
   Serial.println("Initializing display...");
   
-  // Reset the GT911 touch controller before display initialization.
+  // Reset the GT911 touch controller with proper I2C address selection.
+  // The GT911 I2C address is determined by the state of the INT pin during the
+  // rising edge of RST:
+  //   - INT HIGH during RST rise -> address 0x14
+  //   - INT LOW during RST rise -> address 0x5D
   // Hardware note: On ESP32-4848S040, GPIO 38 is shared between touch reset and backlight.
-  // This reset sequence is required for proper GT911 I2C communication.
+  // After reset, LovyanGFX reconfigures this pin for PWM backlight control.
   if (TOUCH_RST_PIN >= 0) {
+    // Configure INT pin as output and set HIGH to select address 0x14
+    if (TOUCH_INT_PIN >= 0) {
+      pinMode(TOUCH_INT_PIN, OUTPUT);
+      digitalWrite(TOUCH_INT_PIN, HIGH);
+      delay(1);  // Ensure INT state is stable before reset sequence
+    }
+    
+    // Perform reset sequence
     pinMode(TOUCH_RST_PIN, OUTPUT);
     digitalWrite(TOUCH_RST_PIN, LOW);
     delay(10);  // GT911 requires minimum 10ms reset pulse
     digitalWrite(TOUCH_RST_PIN, HIGH);
-    delay(50);  // Wait for GT911 to complete internal initialization
-    Serial.println("GT911 touch controller reset complete");
+    delay(50);  // Wait for GT911 address latch and internal initialization
+    
+    // Release INT pin for normal interrupt operation
+    if (TOUCH_INT_PIN >= 0) {
+      pinMode(TOUCH_INT_PIN, INPUT);
+    }
+    
+    Serial.println("GT911 touch controller reset complete (address 0x14)");
   }
   
   displayReady = display.init();
