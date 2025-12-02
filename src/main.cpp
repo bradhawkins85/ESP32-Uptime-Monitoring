@@ -260,7 +260,8 @@ enum LedStatus {
   LED_STATUS_NO_WIFI,      // Orange - no WiFi connection
   LED_STATUS_MESHCORE,     // White - communicating with MeshCore radio
   LED_STATUS_ALL_UP,       // Green pulsing - all services are UP
-  LED_STATUS_ANY_DOWN      // Red pulsing - one or more services are DOWN
+  LED_STATUS_ANY_DOWN,     // Red pulsing - one or more services are DOWN
+  LED_STATUS_PAUSED_DOWN   // Orange pulsing - paused services are DOWN
 };
 
 // Current LED state
@@ -294,7 +295,8 @@ void updateLed() {
   // Calculate pulsing brightness for states that pulse
   bool shouldPulse = (currentLedStatus == LED_STATUS_BOOTING ||
                       currentLedStatus == LED_STATUS_ALL_UP ||
-                      currentLedStatus == LED_STATUS_ANY_DOWN);
+                      currentLedStatus == LED_STATUS_ANY_DOWN ||
+                      currentLedStatus == LED_STATUS_PAUSED_DOWN);
   
   if (shouldPulse) {
     if (ledPulseDirection) {
@@ -342,6 +344,11 @@ void updateLed() {
     case LED_STATUS_ANY_DOWN:
       // Red pulsing
       r = ledBrightness;
+      break;
+    case LED_STATUS_PAUSED_DOWN:
+      // Orange pulsing - paused services are DOWN
+      r = ledBrightness;
+      g = ledBrightness / 3;  // Orange = red + some green
       break;
   }
 
@@ -723,15 +730,29 @@ void loop() {
     // No services configured - show green (nothing to monitor)
     setLedStatus(LED_STATUS_ALL_UP);
   } else {
-    // Check if any enabled service is down
-    bool anyDown = false;
+    // Check if any enabled service is down (either active or paused)
+    bool anyActiveDown = false;
+    bool anyPausedDown = false;
+    unsigned long currentTimeMs = millis();
     for (int i = 0; i < serviceCount; i++) {
       if (services[i].enabled && !services[i].isUp && services[i].lastCheck > 0) {
-        anyDown = true;
-        break;
+        // Check if service is paused (rollover-safe)
+        if (getPauseRemainingMs(services[i].pauseUntil, currentTimeMs) > 0) {
+          anyPausedDown = true;
+        } else {
+          anyActiveDown = true;
+          break;  // Active down takes priority, no need to check further
+        }
       }
     }
-    setLedStatus(anyDown ? LED_STATUS_ANY_DOWN : LED_STATUS_ALL_UP);
+    // Priority: Active down (red) > Paused down (orange) > All up (green)
+    if (anyActiveDown) {
+      setLedStatus(LED_STATUS_ANY_DOWN);
+    } else if (anyPausedDown) {
+      setLedStatus(LED_STATUS_PAUSED_DOWN);
+    } else {
+      setLedStatus(LED_STATUS_ALL_UP);
+    }
   }
 
   // Check services every 5 seconds
