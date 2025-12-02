@@ -235,11 +235,20 @@ static const int HEADER_HEIGHT = 50;
 static const int POWER_BUTTON_SIZE = 40;
 static const int SERVICE_BUTTON_MARGIN = 10;
 static const int SERVICE_BUTTON_HEIGHT = 55;
+static const int URL_CHARS_PER_LINE = 45;         // Characters per line when wrapping URLs
+static const int URL_MAX_LINES = 3;               // Maximum lines for URL display
+static const int CHAR_WIDTH_MULTIPLIER = 12;      // Approximate pixel width per character at text size 2
+static const unsigned long TOUCH_RELEASE_DELAY_MS = 100;  // Delay for touch release detection
+static const unsigned long DISPLAY_AUTO_REFRESH_MS = 5000; // Auto-refresh interval for main view
 
 // Settings UI elements
 static const int TIMEOUT_OPTIONS[] = {0, 30, 60, 120, 300, 600};  // Timeout options in seconds
 static const int TIMEOUT_OPTIONS_COUNT = 6;
 static int selectedTimeoutIndex = 2;  // Default to 60 seconds
+
+// Pre-computed timeout limits in seconds (avoid repeated division)
+static const unsigned long MIN_TIMEOUT_SECONDS = MIN_TIMEOUT_MS / 1000;
+static const unsigned long MAX_TIMEOUT_SECONDS = MAX_TIMEOUT_MS / 1000;
 
 // Function prototypes for LCD
 void initDisplay();
@@ -2988,7 +2997,7 @@ void loadScreenTimeout() {
   file.close();
   
   unsigned long timeout = timeoutStr.toInt();
-  if (timeout == 0 || (timeout >= MIN_TIMEOUT_MS / 1000 && timeout <= MAX_TIMEOUT_MS / 1000)) {
+  if (timeout == 0 || (timeout >= MIN_TIMEOUT_SECONDS && timeout <= MAX_TIMEOUT_SECONDS)) {
     screenTimeoutMs = timeout * 1000;
     // Find matching index for settings UI
     for (int i = 0; i < TIMEOUT_OPTIONS_COUNT; i++) {
@@ -3302,11 +3311,10 @@ void renderDetailView() {
     display.setTextSize(1);
     String urlDisplay = svc.url;
     // Wrap long URLs across multiple lines
-    int charsPerLine = 45;
-    int lines = (urlDisplay.length() + charsPerLine - 1) / charsPerLine;
-    for (int i = 0; i < lines && i < 3; i++) {
+    int lines = (urlDisplay.length() + URL_CHARS_PER_LINE - 1) / URL_CHARS_PER_LINE;
+    for (int i = 0; i < lines && i < URL_MAX_LINES; i++) {
       display.setCursor(10, contentY);
-      display.print(urlDisplay.substring(i * charsPerLine, min((i + 1) * charsPerLine, (int)urlDisplay.length())));
+      display.print(urlDisplay.substring(i * URL_CHARS_PER_LINE, min((i + 1) * URL_CHARS_PER_LINE, (int)urlDisplay.length())));
       contentY += 12;
     }
     display.setTextSize(2);
@@ -3430,7 +3438,7 @@ void renderSettingsView() {
     
     display.setTextColor(TFT_WHITE, bgColor);
     display.setTextSize(2);
-    int textX = btnX + (btnWidth - strlen(optionLabels[i]) * 12) / 2;
+    int textX = btnX + (btnWidth - strlen(optionLabels[i]) * CHAR_WIDTH_MULTIPLIER) / 2;
     display.setCursor(textX, btnY + 15);
     display.print(optionLabels[i]);
   }
@@ -3622,7 +3630,7 @@ void handleDisplayLoop() {
           currentView = VIEW_SETTINGS;
           displayNeedsUpdate = true;
           powerButtonPressed = false;
-        } else if (now - lastTouchTime > 100) {
+        } else if (now - lastTouchTime > TOUCH_RELEASE_DELAY_MS) {
           // Short press - turn off screen
           turnScreenOff();
           powerButtonPressed = false;
@@ -3656,9 +3664,9 @@ void handleDisplayLoop() {
     displayNeedsUpdate = false;
   }
   
-  // Periodically refresh main view to update status changes (every 5 seconds)
+  // Periodically refresh main view to update status changes
   static unsigned long lastAutoRefresh = 0;
-  if (currentView == VIEW_MAIN && now - lastAutoRefresh >= 5000) {
+  if (currentView == VIEW_MAIN && now - lastAutoRefresh >= DISPLAY_AUTO_REFRESH_MS) {
     displayNeedsUpdate = true;
     lastAutoRefresh = now;
   }
