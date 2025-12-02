@@ -199,17 +199,72 @@ class LGFX : public lgfx::LGFX_Device {
 static LGFX display;
 static bool displayReady = false;
 static bool touchReady = false;
-static int currentServiceIndex = 0;
+static int currentServiceIndex = 0;  // Used for detail view
 static bool displayNeedsUpdate = true;
-static unsigned long lastDisplaySwitch = 0;
-static const unsigned long DISPLAY_ROTATION_INTERVAL = 8000;
 static unsigned long lastTouchTime = 0;
 static const unsigned long TOUCH_DEBOUNCE_MS = 300;  // Debounce interval for touch input
 
+// Display view state machine
+enum DisplayView {
+  VIEW_MAIN,      // Main view showing all services as buttons
+  VIEW_DETAIL,    // Detail view showing one service's information
+  VIEW_SETTINGS,  // Settings modal for screen timeout configuration
+  VIEW_OFF        // Screen is off (backlight off)
+};
+
+static DisplayView currentView = VIEW_MAIN;
+
+// Screen timeout and power management
+static unsigned long lastActivityTime = 0;       // Last user interaction time
+static unsigned long screenTimeoutMs = 60000;    // Default 60 seconds timeout (0 = disabled)
+static const unsigned long MIN_TIMEOUT_MS = 10000;   // Minimum 10 seconds
+static const unsigned long MAX_TIMEOUT_MS = 600000;  // Maximum 10 minutes
+static const char* SCREEN_TIMEOUT_FILE = "/screen_timeout.txt";
+
+// Power button state for long-press detection
+static unsigned long powerButtonPressStart = 0;
+static bool powerButtonPressed = false;
+static const unsigned long POWER_BUTTON_HOLD_MS = 1000;  // Hold for 1 second to open settings
+
+// Double-tap detection for wake
+static unsigned long lastTapTime = 0;
+static const unsigned long DOUBLE_TAP_WINDOW_MS = 500;  // Time window for double-tap
+
+// UI layout constants
+static const int HEADER_HEIGHT = 50;
+static const int POWER_BUTTON_SIZE = 40;
+static const int SERVICE_BUTTON_MARGIN = 10;
+static const int SERVICE_BUTTON_HEIGHT = 55;
+static const int URL_CHARS_PER_LINE = 45;         // Characters per line when wrapping URLs
+static const int URL_MAX_LINES = 3;               // Maximum lines for URL display
+static const int CHAR_WIDTH_MULTIPLIER = 12;      // Approximate pixel width per character at text size 2
+static const unsigned long TOUCH_RELEASE_DELAY_MS = 100;  // Delay for touch release detection
+static const unsigned long DISPLAY_AUTO_REFRESH_MS = 5000; // Auto-refresh interval for main view
+
+// Settings UI elements
+static const int TIMEOUT_OPTIONS[] = {0, 30, 60, 120, 300, 600};  // Timeout options in seconds
+static const int TIMEOUT_OPTIONS_COUNT = 6;
+static int selectedTimeoutIndex = 2;  // Default to 60 seconds
+
+// Pre-computed timeout limits in seconds (avoid repeated division)
+static const unsigned long MIN_TIMEOUT_SECONDS = MIN_TIMEOUT_MS / 1000;
+static const unsigned long MAX_TIMEOUT_SECONDS = MAX_TIMEOUT_MS / 1000;
+
 // Function prototypes for LCD
 void initDisplay();
-void renderServiceOnDisplay();
+void renderMainView();
+void renderDetailView();
+void renderSettingsView();
 void handleDisplayLoop();
+void handleMainViewTouch(int16_t x, int16_t y);
+void handleDetailViewTouch(int16_t x, int16_t y);
+void handleSettingsViewTouch(int16_t x, int16_t y);
+void handleScreenOffTouch(int16_t x, int16_t y);
+void turnScreenOff();
+void turnScreenOn();
+void saveScreenTimeout();
+void loadScreenTimeout();
+void recordActivity();
 #endif // HAS_LCD
 
 // RGB LED Status Indicator
@@ -2925,6 +2980,67 @@ String getServiceTypeString(ServiceType type) {
 // --- LCD and Touch Screen Functions (Conditional) ---
 #ifdef HAS_LCD
 
+// Record user activity for screen timeout
+void recordActivity() {
+  lastActivityTime = millis();
+}
+
+// Load screen timeout setting from LittleFS
+void loadScreenTimeout() {
+  File file = LittleFS.open(SCREEN_TIMEOUT_FILE, "r");
+  if (!file) {
+    Serial.println("No screen timeout setting found, using default");
+    return;
+  }
+  
+  String timeoutStr = file.readStringUntil('\n');
+  file.close();
+  
+  unsigned long timeout = timeoutStr.toInt();
+  if (timeout == 0 || (timeout >= MIN_TIMEOUT_SECONDS && timeout <= MAX_TIMEOUT_SECONDS)) {
+    screenTimeoutMs = timeout * 1000;
+    // Find matching index for settings UI
+    for (int i = 0; i < TIMEOUT_OPTIONS_COUNT; i++) {
+      if (TIMEOUT_OPTIONS[i] == (int)(timeout)) {
+        selectedTimeoutIndex = i;
+        break;
+      }
+    }
+    Serial.printf("Loaded screen timeout: %lu seconds\n", timeout);
+  }
+}
+
+// Save screen timeout setting to LittleFS
+void saveScreenTimeout() {
+  File file = LittleFS.open(SCREEN_TIMEOUT_FILE, "w");
+  if (!file) {
+    Serial.println("Failed to save screen timeout setting");
+    return;
+  }
+  
+  file.println(screenTimeoutMs / 1000);
+  file.close();
+  Serial.printf("Saved screen timeout: %lu seconds\n", screenTimeoutMs / 1000);
+}
+
+// Turn screen off (backlight off)
+void turnScreenOff() {
+  if (!displayReady) return;
+  display.setBrightness(0);
+  currentView = VIEW_OFF;
+  Serial.println("Screen turned off");
+}
+
+// Turn screen on (restore backlight)
+void turnScreenOn() {
+  if (!displayReady) return;
+  display.setBrightness(200);
+  currentView = VIEW_MAIN;
+  recordActivity();
+  displayNeedsUpdate = true;
+  Serial.println("Screen turned on");
+}
+
 void initDisplay() {
   Serial.println("Initializing display...");
   
@@ -2977,142 +3093,494 @@ void initDisplay() {
   }
 
   if (displayReady) {
+    // Load saved screen timeout setting
+    loadScreenTimeout();
+    
     display.fillScreen(TFT_BLACK);
-    renderServiceOnDisplay();
-    lastDisplaySwitch = millis();
+    currentView = VIEW_MAIN;
+    recordActivity();
+    displayNeedsUpdate = true;
     Serial.println("Display initialized successfully");
   } else {
     Serial.println("Display initialization failed");
   }
 }
 
-void renderServiceOnDisplay() {
+// Draw the header with title and power button
+void drawHeader() {
+  int16_t width = display.width();
+  
+  // Header background
+  display.fillRect(0, 0, width, HEADER_HEIGHT, TFT_NAVY);
+  
+  // Title
+  display.setTextColor(TFT_CYAN, TFT_NAVY);
+  display.setTextSize(2);
+  display.setCursor(10, 15);
+  display.print("ESP32 Monitor");
+  
+  // WiFi status
+  if (WiFi.status() == WL_CONNECTED) {
+    display.setTextColor(TFT_WHITE, TFT_NAVY);
+    display.setCursor(10, 32);
+    display.setTextSize(1);
+    display.print(WiFi.localIP().toString());
+  }
+  
+  // Power button (top right)
+  int powerBtnX = width - POWER_BUTTON_SIZE - 5;
+  int powerBtnY = 5;
+  display.fillRoundRect(powerBtnX, powerBtnY, POWER_BUTTON_SIZE, POWER_BUTTON_SIZE, 8, TFT_DARKGREY);
+  display.drawRoundRect(powerBtnX, powerBtnY, POWER_BUTTON_SIZE, POWER_BUTTON_SIZE, 8, TFT_WHITE);
+  
+  // Power icon (simple circle with line)
+  int iconCenterX = powerBtnX + POWER_BUTTON_SIZE / 2;
+  int iconCenterY = powerBtnY + POWER_BUTTON_SIZE / 2;
+  display.drawCircle(iconCenterX, iconCenterY, 10, TFT_WHITE);
+  display.fillRect(iconCenterX - 2, iconCenterY - 12, 4, 10, TFT_WHITE);
+}
+
+// Get status color for a service
+uint16_t getServiceStatusColor(const Service& svc) {
+  if (!svc.enabled) {
+    return TFT_DARKGREY;
+  }
+  if (svc.pauseUntil > 0 && getPauseRemainingMs(svc.pauseUntil, millis()) > 0) {
+    return TFT_ORANGE;
+  }
+  if (svc.lastCheck == 0) {
+    return TFT_BLUE;  // Pending
+  }
+  return svc.isUp ? TFT_GREEN : TFT_RED;
+}
+
+// Render main view showing all services as buttons
+void renderMainView() {
   if (!displayReady) return;
 
   display.fillScreen(TFT_BLACK);
-
+  
   int16_t width = display.width();
   int16_t height = display.height();
 
-  // Header with IP address
-  display.setTextColor(TFT_CYAN, TFT_BLACK);
-  display.setCursor(10, 10);
-  display.setTextSize(2);
-  if (WiFi.status() == WL_CONNECTED) {
-    String header = "ESP32 Monitor - " + WiFi.localIP().toString();
-    display.println(header);
-  } else {
-    display.println("ESP32 Monitor - No WiFi");
-  }
+  // Draw header
+  drawHeader();
 
   // Show message if no services configured
   if (serviceCount == 0) {
-    display.setCursor(10, 60);
+    display.setCursor(10, HEADER_HEIGHT + 20);
     display.setTextColor(TFT_WHITE, TFT_BLACK);
+    display.setTextSize(2);
     display.println("No services configured.");
+    display.setCursor(10, HEADER_HEIGHT + 50);
     display.println("Add services via web UI.");
     return;
   }
 
-  // Ensure index is valid
-  if (currentServiceIndex >= serviceCount) {
-    currentServiceIndex = 0;
+  // Calculate button layout - 2 columns
+  int cols = 2;
+  int buttonWidth = (width - (cols + 1) * SERVICE_BUTTON_MARGIN) / cols;
+  int startY = HEADER_HEIGHT + SERVICE_BUTTON_MARGIN;
+  int availableHeight = height - startY - SERVICE_BUTTON_MARGIN;
+  int maxRows = availableHeight / (SERVICE_BUTTON_HEIGHT + SERVICE_BUTTON_MARGIN);
+  
+  // Draw service buttons
+  for (int i = 0; i < serviceCount && i < maxRows * cols; i++) {
+    int row = i / cols;
+    int col = i % cols;
+    
+    int btnX = SERVICE_BUTTON_MARGIN + col * (buttonWidth + SERVICE_BUTTON_MARGIN);
+    int btnY = startY + row * (SERVICE_BUTTON_HEIGHT + SERVICE_BUTTON_MARGIN);
+    
+    Service& svc = services[i];
+    uint16_t statusColor = getServiceStatusColor(svc);
+    
+    // Button background
+    display.fillRoundRect(btnX, btnY, buttonWidth, SERVICE_BUTTON_HEIGHT, 8, TFT_DARKGREY);
+    
+    // Status indicator (left side colored bar)
+    display.fillRoundRect(btnX, btnY, 8, SERVICE_BUTTON_HEIGHT, 4, statusColor);
+    
+    // Service name (truncate if too long)
+    display.setTextColor(TFT_WHITE, TFT_DARKGREY);
+    display.setTextSize(2);
+    String name = svc.name;
+    if (name.length() > 12) {
+      name = name.substring(0, 10) + "..";
+    }
+    display.setCursor(btnX + 15, btnY + 10);
+    display.print(name);
+    
+    // Status text
+    display.setTextSize(1);
+    display.setTextColor(statusColor, TFT_DARKGREY);
+    display.setCursor(btnX + 15, btnY + 35);
+    if (!svc.enabled) {
+      display.print("DISABLED");
+    } else if (svc.pauseUntil > 0 && getPauseRemainingMs(svc.pauseUntil, millis()) > 0) {
+      display.print("PAUSED");
+    } else if (svc.lastCheck == 0) {
+      display.print("PENDING");
+    } else {
+      display.print(svc.isUp ? "UP" : "DOWN");
+    }
   }
+  
+  // Show indicator if there are more services than can fit
+  if (serviceCount > maxRows * cols) {
+    display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    display.setTextSize(1);
+    display.setCursor(width / 2 - 40, height - 15);
+    display.printf("+ %d more", serviceCount - maxRows * cols);
+  }
+}
+
+// Render detail view for a single service
+void renderDetailView() {
+  if (!displayReady) return;
+  if (currentServiceIndex >= serviceCount) {
+    currentView = VIEW_MAIN;
+    displayNeedsUpdate = true;
+    return;
+  }
+
+  display.fillScreen(TFT_BLACK);
+  
+  int16_t width = display.width();
+  int16_t height = display.height();
 
   Service& svc = services[currentServiceIndex];
   
-  // Determine status text and color based on check state
-  String status;
-  uint16_t statusColor;
-  if (svc.lastCheck == 0) {
-    // Service hasn't been checked yet
-    status = "PENDING";
-    statusColor = TFT_BLUE;
-  } else if (svc.isUp) {
-    status = "UP";
-    statusColor = TFT_GREEN;
-  } else {
-    status = "DOWN";
-    statusColor = TFT_RED;
-  }
-
-  // Service name with pagination
-  display.setTextSize(3);
-  display.setTextColor(TFT_WHITE, TFT_BLACK);
-  display.setCursor(10, 50);
-  display.printf("%s (%d/%d)", svc.name.c_str(), currentServiceIndex + 1, serviceCount);
-
-  // Status box
-  display.fillRoundRect(10, 90, width - 20, 60, 12, TFT_NAVY);
+  // Header with back button
+  display.fillRect(0, 0, width, HEADER_HEIGHT, TFT_NAVY);
+  
+  // Back button
+  display.fillRoundRect(5, 5, 60, POWER_BUTTON_SIZE, 8, TFT_DARKGREY);
+  display.drawRoundRect(5, 5, 60, POWER_BUTTON_SIZE, 8, TFT_WHITE);
+  display.setTextColor(TFT_WHITE, TFT_DARKGREY);
   display.setTextSize(2);
-  display.setCursor(20, 110);
-  display.setTextColor(statusColor, TFT_NAVY);
-  display.printf("Status: %s", status.c_str());
-
-  // Service type
-  display.setCursor(20, 150);
-  display.setTextColor(TFT_YELLOW, TFT_BLACK);
-  display.printf("Type: %s", getServiceTypeString(svc.type).c_str());
-
-  // Host information (not applicable for PUSH type)
-  if (svc.type != TYPE_PUSH) {
-    display.setCursor(20, 180);
-    display.setTextColor(TFT_WHITE, TFT_BLACK);
-    if (svc.type == TYPE_HTTP_GET && svc.url.length() > 0) {
-      // For HTTP GET, show URL (truncated if too long)
-      String urlDisplay = svc.url;
-      if (urlDisplay.length() > 30) {
-        urlDisplay = urlDisplay.substring(0, 27) + "...";
-      }
-      display.printf("URL: %s", urlDisplay.c_str());
-    } else if (svc.type == TYPE_PING) {
-      display.printf("Host: %s", svc.host.c_str());
-    } else {
-      display.printf("Host: %s:%d", svc.host.c_str(), svc.port);
-    }
+  display.setCursor(15, 15);
+  display.print("<-");
+  
+  // Service name in header
+  display.setTextColor(TFT_CYAN, TFT_NAVY);
+  display.setCursor(75, 15);
+  String headerName = svc.name;
+  if (headerName.length() > 18) {
+    headerName = headerName.substring(0, 16) + "..";
   }
+  display.print(headerName);
 
-  // Last check timestamp
-  unsigned long sinceCheck = svc.lastCheck > 0 ? (millis() - svc.lastCheck) / 1000 : 0;
-  display.setCursor(20, 210);
-  display.setTextColor(TFT_WHITE, TFT_BLACK);
-  if (svc.lastCheck == 0) {
-    display.println("Last check: pending");
+  // Content area
+  int contentY = HEADER_HEIGHT + 10;
+  
+  // Status box with large indicator
+  uint16_t statusColor = getServiceStatusColor(svc);
+  String statusText;
+  if (!svc.enabled) {
+    statusText = "DISABLED";
+  } else if (svc.pauseUntil > 0 && getPauseRemainingMs(svc.pauseUntil, millis()) > 0) {
+    statusText = "PAUSED";
+  } else if (svc.lastCheck == 0) {
+    statusText = "PENDING";
   } else {
+    statusText = svc.isUp ? "UP" : "DOWN";
+  }
+  
+  display.fillRoundRect(10, contentY, width - 20, 50, 10, statusColor);
+  display.setTextColor(TFT_WHITE, statusColor);
+  display.setTextSize(3);
+  display.setCursor(width / 2 - statusText.length() * 9, contentY + 12);
+  display.print(statusText);
+  
+  contentY += 60;
+  
+  // Service details
+  display.setTextSize(2);
+  display.setTextColor(TFT_YELLOW, TFT_BLACK);
+  display.setCursor(10, contentY);
+  display.printf("Type: %s", getServiceTypeString(svc.type).c_str());
+  contentY += 25;
+  
+  // Host/URL information
+  display.setTextColor(TFT_WHITE, TFT_BLACK);
+  if (svc.type == TYPE_HTTP_GET && svc.url.length() > 0) {
+    display.setCursor(10, contentY);
+    display.print("URL:");
+    contentY += 20;
+    display.setTextSize(1);
+    String urlDisplay = svc.url;
+    // Wrap long URLs across multiple lines
+    int lines = (urlDisplay.length() + URL_CHARS_PER_LINE - 1) / URL_CHARS_PER_LINE;
+    for (int i = 0; i < lines && i < URL_MAX_LINES; i++) {
+      display.setCursor(10, contentY);
+      display.print(urlDisplay.substring(i * URL_CHARS_PER_LINE, min((i + 1) * URL_CHARS_PER_LINE, (int)urlDisplay.length())));
+      contentY += 12;
+    }
+    display.setTextSize(2);
+  } else if (svc.type == TYPE_PUSH) {
+    display.setCursor(10, contentY);
+    display.print("Push-based monitor");
+    contentY += 25;
+  } else if (svc.type == TYPE_PING) {
+    display.setCursor(10, contentY);
+    display.printf("Host: %s", svc.host.c_str());
+    contentY += 25;
+  } else {
+    display.setCursor(10, contentY);
+    display.printf("Host: %s:%d", svc.host.c_str(), svc.port);
+    contentY += 25;
+  }
+  
+  // SNMP-specific info
+  if (svc.type == TYPE_SNMP_GET && svc.snmpOid.length() > 0) {
+    display.setCursor(10, contentY);
+    display.setTextSize(1);
+    display.printf("OID: %s", svc.snmpOid.c_str());
+    contentY += 15;
+    display.setTextSize(2);
+  }
+  
+  contentY += 10;
+  
+  // Timing information
+  display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  display.setCursor(10, contentY);
+  display.printf("Interval: %ds", svc.checkInterval);
+  contentY += 25;
+  
+  display.setCursor(10, contentY);
+  if (svc.lastCheck == 0) {
+    display.print("Last check: pending");
+  } else {
+    unsigned long sinceCheck = (millis() - svc.lastCheck) / 1000;
     display.printf("Last check: %lus ago", sinceCheck);
   }
-
-  // Show enabled/paused status
-  display.setCursor(20, 240);
-  if (!svc.enabled) {
-    display.setTextColor(TFT_DARKGREY, TFT_BLACK);
-    display.println("Status: Disabled");
-  } else if (svc.pauseUntil > 0) {
+  contentY += 25;
+  
+  // Thresholds
+  display.setCursor(10, contentY);
+  display.printf("Thresholds: %d fail / %d pass", svc.failThreshold, svc.passThreshold);
+  contentY += 25;
+  
+  // Consecutive counts
+  display.setCursor(10, contentY);
+  display.printf("Consecutive: %d pass / %d fail", svc.consecutivePasses, svc.consecutiveFails);
+  contentY += 25;
+  
+  // Pause status
+  if (svc.pauseUntil > 0) {
     unsigned long remaining = getPauseRemainingMs(svc.pauseUntil, millis());
     if (remaining > 0) {
       display.setTextColor(TFT_ORANGE, TFT_BLACK);
+      display.setCursor(10, contentY);
       display.printf("Paused: %lus remaining", remaining / 1000);
+      contentY += 25;
     }
   }
-
+  
   // Error message if present
   if (svc.lastError.length() > 0) {
-    display.setCursor(20, 270);
     display.setTextColor(TFT_RED, TFT_BLACK);
-    // Truncate error message if too long
+    display.setCursor(10, contentY);
+    display.print("Error:");
+    contentY += 20;
+    display.setTextSize(1);
     String errorDisplay = svc.lastError;
-    if (errorDisplay.length() > 35) {
-      errorDisplay = errorDisplay.substring(0, 32) + "...";
+    if (errorDisplay.length() > 50) {
+      errorDisplay = errorDisplay.substring(0, 47) + "...";
     }
-    display.printf("Error: %s", errorDisplay.c_str());
+    display.setCursor(10, contentY);
+    display.print(errorDisplay);
   }
+}
 
-  // Navigation instructions at bottom
-  display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-  display.setCursor(10, height - 60);
-  display.println("Tap left/right to switch");
-  display.setCursor(10, height - 30);
-  display.printf("Auto-rotate every %lus", DISPLAY_ROTATION_INTERVAL / 1000);
+// Render settings view for screen timeout configuration
+void renderSettingsView() {
+  if (!displayReady) return;
+
+  display.fillScreen(TFT_BLACK);
+  
+  int16_t width = display.width();
+  int16_t height = display.height();
+
+  // Header
+  display.fillRect(0, 0, width, HEADER_HEIGHT, TFT_NAVY);
+  display.setTextColor(TFT_CYAN, TFT_NAVY);
+  display.setTextSize(2);
+  display.setCursor(10, 15);
+  display.print("Screen Timeout Settings");
+  
+  // Instructions
+  display.setTextColor(TFT_WHITE, TFT_BLACK);
+  display.setCursor(10, HEADER_HEIGHT + 15);
+  display.print("Select screen timeout:");
+  
+  // Timeout options as buttons
+  int btnWidth = (width - 30) / 2;
+  int btnHeight = 50;
+  int startY = HEADER_HEIGHT + 50;
+  
+  const char* optionLabels[] = {"Never", "30 sec", "1 min", "2 min", "5 min", "10 min"};
+  
+  for (int i = 0; i < TIMEOUT_OPTIONS_COUNT; i++) {
+    int row = i / 2;
+    int col = i % 2;
+    int btnX = 10 + col * (btnWidth + 10);
+    int btnY = startY + row * (btnHeight + 10);
+    
+    bool isSelected = (i == selectedTimeoutIndex);
+    uint16_t bgColor = isSelected ? TFT_DARKGREEN : TFT_DARKGREY;
+    uint16_t borderColor = isSelected ? TFT_GREEN : TFT_WHITE;
+    
+    display.fillRoundRect(btnX, btnY, btnWidth, btnHeight, 8, bgColor);
+    display.drawRoundRect(btnX, btnY, btnWidth, btnHeight, 8, borderColor);
+    
+    display.setTextColor(TFT_WHITE, bgColor);
+    display.setTextSize(2);
+    int textX = btnX + (btnWidth - strlen(optionLabels[i]) * CHAR_WIDTH_MULTIPLIER) / 2;
+    display.setCursor(textX, btnY + 15);
+    display.print(optionLabels[i]);
+  }
+  
+  // Save and Close buttons at bottom
+  int bottomBtnY = height - 60;
+  int saveBtnWidth = 140;
+  int closeBtnWidth = 100;
+  
+  // Save button
+  display.fillRoundRect(10, bottomBtnY, saveBtnWidth, 50, 8, TFT_DARKGREEN);
+  display.drawRoundRect(10, bottomBtnY, saveBtnWidth, 50, 8, TFT_GREEN);
+  display.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+  display.setTextSize(2);
+  display.setCursor(35, bottomBtnY + 15);
+  display.print("Save");
+  
+  // Close button
+  display.fillRoundRect(width - closeBtnWidth - 10, bottomBtnY, closeBtnWidth, 50, 8, TFT_MAROON);
+  display.drawRoundRect(width - closeBtnWidth - 10, bottomBtnY, closeBtnWidth, 50, 8, TFT_RED);
+  display.setTextColor(TFT_WHITE, TFT_MAROON);
+  display.setCursor(width - closeBtnWidth + 10, bottomBtnY + 15);
+  display.print("Close");
+}
+
+// Handle touch input for main view
+void handleMainViewTouch(int16_t x, int16_t y) {
+  int16_t width = display.width();
+  int16_t height = display.height();
+  
+  // Check power button (top right)
+  int powerBtnX = width - POWER_BUTTON_SIZE - 5;
+  int powerBtnY = 5;
+  if (x >= powerBtnX && x <= powerBtnX + POWER_BUTTON_SIZE &&
+      y >= powerBtnY && y <= powerBtnY + POWER_BUTTON_SIZE) {
+    // Power button touched - check if it's a long press (handled in main loop)
+    // For a short tap, turn off the screen
+    if (!powerButtonPressed) {
+      powerButtonPressed = true;
+      powerButtonPressStart = millis();
+    }
+    return;
+  }
+  
+  // Check service buttons
+  if (serviceCount > 0 && y > HEADER_HEIGHT) {
+    int cols = 2;
+    int buttonWidth = (width - (cols + 1) * SERVICE_BUTTON_MARGIN) / cols;
+    int startY = HEADER_HEIGHT + SERVICE_BUTTON_MARGIN;
+    int availableHeight = height - startY - SERVICE_BUTTON_MARGIN;
+    int maxRows = availableHeight / (SERVICE_BUTTON_HEIGHT + SERVICE_BUTTON_MARGIN);
+    
+    for (int i = 0; i < serviceCount && i < maxRows * cols; i++) {
+      int row = i / cols;
+      int col = i % cols;
+      
+      int btnX = SERVICE_BUTTON_MARGIN + col * (buttonWidth + SERVICE_BUTTON_MARGIN);
+      int btnY = startY + row * (SERVICE_BUTTON_HEIGHT + SERVICE_BUTTON_MARGIN);
+      
+      if (x >= btnX && x <= btnX + buttonWidth &&
+          y >= btnY && y <= btnY + SERVICE_BUTTON_HEIGHT) {
+        // Service button tapped - show detail view
+        currentServiceIndex = i;
+        currentView = VIEW_DETAIL;
+        displayNeedsUpdate = true;
+        return;
+      }
+    }
+  }
+}
+
+// Handle touch input for detail view
+void handleDetailViewTouch(int16_t x, int16_t y) {
+  // Check back button (top left)
+  if (x >= 5 && x <= 65 && y >= 5 && y <= 5 + POWER_BUTTON_SIZE) {
+    currentView = VIEW_MAIN;
+    displayNeedsUpdate = true;
+    return;
+  }
+}
+
+// Handle touch input for settings view
+void handleSettingsViewTouch(int16_t x, int16_t y) {
+  int16_t width = display.width();
+  int16_t height = display.height();
+  
+  // Check timeout option buttons
+  int btnWidth = (width - 30) / 2;
+  int btnHeight = 50;
+  int startY = HEADER_HEIGHT + 50;
+  
+  for (int i = 0; i < TIMEOUT_OPTIONS_COUNT; i++) {
+    int row = i / 2;
+    int col = i % 2;
+    int btnX = 10 + col * (btnWidth + 10);
+    int btnY = startY + row * (btnHeight + 10);
+    
+    if (x >= btnX && x <= btnX + btnWidth &&
+        y >= btnY && y <= btnY + btnHeight) {
+      selectedTimeoutIndex = i;
+      displayNeedsUpdate = true;
+      return;
+    }
+  }
+  
+  // Check Save button
+  int bottomBtnY = height - 60;
+  int saveBtnWidth = 140;
+  int closeBtnWidth = 100;
+  
+  if (x >= 10 && x <= 10 + saveBtnWidth &&
+      y >= bottomBtnY && y <= bottomBtnY + 50) {
+    // Save the selected timeout
+    screenTimeoutMs = (unsigned long)TIMEOUT_OPTIONS[selectedTimeoutIndex] * 1000;
+    saveScreenTimeout();
+    currentView = VIEW_MAIN;
+    displayNeedsUpdate = true;
+    return;
+  }
+  
+  // Check Close button
+  if (x >= width - closeBtnWidth - 10 && x <= width - 10 &&
+      y >= bottomBtnY && y <= bottomBtnY + 50) {
+    // Close without saving
+    currentView = VIEW_MAIN;
+    displayNeedsUpdate = true;
+    return;
+  }
+}
+
+// Handle touch input when screen is off (double-tap to wake)
+void handleScreenOffTouch(int16_t x, int16_t y) {
+  unsigned long now = millis();
+  
+  // Check for double-tap
+  if (now - lastTapTime <= DOUBLE_TAP_WINDOW_MS) {
+    // Double-tap detected - wake up screen
+    turnScreenOn();
+    lastTapTime = 0;  // Reset to prevent accidental triple-tap
+  } else {
+    lastTapTime = now;
+  }
 }
 
 void handleDisplayLoop() {
@@ -3120,42 +3588,87 @@ void handleDisplayLoop() {
 
   unsigned long now = millis();
 
-  // Auto-rotate through services
-  if (serviceCount > 0 && now - lastDisplaySwitch >= DISPLAY_ROTATION_INTERVAL) {
-    currentServiceIndex = (currentServiceIndex + 1) % serviceCount;
-    displayNeedsUpdate = true;
-    lastDisplaySwitch = now;
-  }
-
-  // Handle touch input for manual navigation (non-blocking debounce)
-  if (touchReady && serviceCount > 0 && (now - lastTouchTime >= TOUCH_DEBOUNCE_MS)) {
+  // Handle touch input
+  if (touchReady && (now - lastTouchTime >= TOUCH_DEBOUNCE_MS)) {
     lgfx::touch_point_t tp;
     int touchCount = display.getTouch(&tp, 1);
     
     if (touchCount > 0) {
       int16_t x = tp.x;
       int16_t y = tp.y;
-
-      // Only respond to touches below the header area
-      if (y > 20) {
-        if (x < display.width() / 2) {
-          // Left side - previous service
-          currentServiceIndex = (currentServiceIndex - 1 + serviceCount) % serviceCount;
-        } else {
-          // Right side - next service
-          currentServiceIndex = (currentServiceIndex + 1) % serviceCount;
+      lastTouchTime = now;
+      
+      if (currentView == VIEW_OFF) {
+        // Screen is off - check for double-tap to wake
+        handleScreenOffTouch(x, y);
+      } else {
+        // Screen is on - record activity and handle touch
+        recordActivity();
+        
+        switch (currentView) {
+          case VIEW_MAIN:
+            handleMainViewTouch(x, y);
+            break;
+          case VIEW_DETAIL:
+            handleDetailViewTouch(x, y);
+            break;
+          case VIEW_SETTINGS:
+            handleSettingsViewTouch(x, y);
+            break;
+          default:
+            break;
         }
-        displayNeedsUpdate = true;
-        lastDisplaySwitch = now;
-        lastTouchTime = now;  // Record touch time for debounce
       }
+    } else {
+      // No touch detected
+      
+      // Check if power button was held long enough for settings
+      if (powerButtonPressed) {
+        unsigned long holdTime = now - powerButtonPressStart;
+        if (holdTime >= POWER_BUTTON_HOLD_MS) {
+          // Long press - open settings
+          currentView = VIEW_SETTINGS;
+          displayNeedsUpdate = true;
+          powerButtonPressed = false;
+        } else if (now - lastTouchTime > TOUCH_RELEASE_DELAY_MS) {
+          // Short press - turn off screen
+          turnScreenOff();
+          powerButtonPressed = false;
+        }
+      }
+    }
+  }
+  
+  // Handle screen timeout (only when screen is on and timeout is enabled)
+  if (currentView != VIEW_OFF && screenTimeoutMs > 0) {
+    if (now - lastActivityTime >= screenTimeoutMs) {
+      turnScreenOff();
     }
   }
 
   // Update display if needed
-  if (displayNeedsUpdate) {
-    renderServiceOnDisplay();
+  if (displayNeedsUpdate && currentView != VIEW_OFF) {
+    switch (currentView) {
+      case VIEW_MAIN:
+        renderMainView();
+        break;
+      case VIEW_DETAIL:
+        renderDetailView();
+        break;
+      case VIEW_SETTINGS:
+        renderSettingsView();
+        break;
+      default:
+        break;
+    }
     displayNeedsUpdate = false;
+  }
+  
+  // Periodically refresh main view to update status changes
+  static unsigned long lastAutoRefresh = 0;
+  if (currentView == VIEW_MAIN && now - lastAutoRefresh >= DISPLAY_AUTO_REFRESH_MS) {
+    displayNeedsUpdate = true;
+    lastAutoRefresh = now;
   }
 }
 
