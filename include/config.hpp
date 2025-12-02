@@ -42,3 +42,6 @@ extern const bool BOOT_NOTIFICATION_ENABLED;
 
 // RGB LED configuration
 extern const bool LED_ENABLED;
+
+// Screen timeout configuration (in seconds, 0 = disabled)
+extern const int SCREEN_TIMEOUT;

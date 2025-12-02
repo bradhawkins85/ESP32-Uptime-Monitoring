@@ -225,23 +225,15 @@ static const unsigned long TOUCH_DEBOUNCE_MS = 300;  // Debounce interval for to
 enum DisplayView {
   VIEW_MAIN,      // Main view showing all services as buttons
   VIEW_DETAIL,    // Detail view showing one service's information
-  VIEW_SETTINGS,  // Settings modal for screen timeout configuration
   VIEW_OFF        // Screen is off (backlight off)
 };
 
 static DisplayView currentView = VIEW_MAIN;
 
 // Screen timeout and power management
+// Screen timeout is configured via SCREEN_TIMEOUT in .env file (in seconds, 0 = disabled)
 static unsigned long lastActivityTime = 0;       // Last user interaction time
-static unsigned long screenTimeoutMs = 60000;    // Default 60 seconds timeout (0 = disabled)
-static const unsigned long MIN_TIMEOUT_MS = 10000;   // Minimum 10 seconds
-static const unsigned long MAX_TIMEOUT_MS = 600000;  // Maximum 10 minutes
-static const char* SCREEN_TIMEOUT_FILE = "/screen_timeout.txt";
-
-// Power button state for long-press detection
-static unsigned long powerButtonPressStart = 0;
-static bool powerButtonPressed = false;
-static const unsigned long POWER_BUTTON_HOLD_MS = 1000;  // Hold for 1 second to open settings
+static unsigned long screenTimeoutMs = 60000;    // Will be set from SCREEN_TIMEOUT config in initDisplay()
 
 // Double-tap detection for wake
 static unsigned long lastTapTime = 0;
@@ -254,33 +246,18 @@ static const int SERVICE_BUTTON_MARGIN = 10;
 static const int SERVICE_BUTTON_HEIGHT = 55;
 static const int URL_CHARS_PER_LINE = 45;         // Characters per line when wrapping URLs
 static const int URL_MAX_LINES = 3;               // Maximum lines for URL display
-static const int CHAR_WIDTH_MULTIPLIER = 12;      // Approximate pixel width per character at text size 2
-static const unsigned long TOUCH_RELEASE_DELAY_MS = 100;  // Delay for touch release detection
 static const unsigned long DISPLAY_AUTO_REFRESH_MS = 5000; // Auto-refresh interval for main view
-
-// Settings UI elements
-static const int TIMEOUT_OPTIONS[] = {0, 30, 60, 120, 300, 600};  // Timeout options in seconds
-static const int TIMEOUT_OPTIONS_COUNT = 6;
-static int selectedTimeoutIndex = 2;  // Default to 60 seconds
-
-// Pre-computed timeout limits in seconds (avoid repeated division)
-static const unsigned long MIN_TIMEOUT_SECONDS = MIN_TIMEOUT_MS / 1000;
-static const unsigned long MAX_TIMEOUT_SECONDS = MAX_TIMEOUT_MS / 1000;
 
 // Function prototypes for LCD
 void initDisplay();
 void renderMainView();
 void renderDetailView();
-void renderSettingsView();
 void handleDisplayLoop();
 void handleMainViewTouch(int16_t x, int16_t y);
 void handleDetailViewTouch(int16_t x, int16_t y);
-void handleSettingsViewTouch(int16_t x, int16_t y);
 void handleScreenOffTouch(int16_t x, int16_t y);
 void turnScreenOff();
 void turnScreenOn();
-void saveScreenTimeout();
-void loadScreenTimeout();
 void recordActivity();
 #endif // HAS_LCD
 
@@ -3088,59 +3065,6 @@ void recordActivity() {
   lastActivityTime = millis();
 }
 
-// Load screen timeout setting from LittleFS
-void loadScreenTimeout() {
-  if (!littleFsReady) {
-    Serial.println("LittleFS not mounted; using default screen timeout");
-    return;
-  }
-
-  if (!LittleFS.exists(SCREEN_TIMEOUT_FILE)) {
-    Serial.println("No screen timeout setting found, using default");
-    return;
-  }
-
-  File file = LittleFS.open(SCREEN_TIMEOUT_FILE, "r");
-  if (!file) {
-    Serial.println("Failed to open screen timeout file");
-    return;
-  }
-  
-  String timeoutStr = file.readStringUntil('\n');
-  file.close();
-  
-  unsigned long timeout = timeoutStr.toInt();
-  if (timeout == 0 || (timeout >= MIN_TIMEOUT_SECONDS && timeout <= MAX_TIMEOUT_SECONDS)) {
-    screenTimeoutMs = timeout * 1000;
-    // Find matching index for settings UI
-    for (int i = 0; i < TIMEOUT_OPTIONS_COUNT; i++) {
-      if (TIMEOUT_OPTIONS[i] == (int)(timeout)) {
-        selectedTimeoutIndex = i;
-        break;
-      }
-    }
-    Serial.printf("Loaded screen timeout: %lu seconds\n", timeout);
-  }
-}
-
-// Save screen timeout setting to LittleFS
-void saveScreenTimeout() {
-  if (!littleFsReady) {
-    Serial.println("LittleFS not mounted; cannot save screen timeout");
-    return;
-  }
-
-  File file = LittleFS.open(SCREEN_TIMEOUT_FILE, "w");
-  if (!file) {
-    Serial.println("Failed to save screen timeout setting");
-    return;
-  }
-  
-  file.println(screenTimeoutMs / 1000);
-  file.close();
-  Serial.printf("Saved screen timeout: %lu seconds\n", screenTimeoutMs / 1000);
-}
-
 // Turn screen off (backlight off)
 void turnScreenOff() {
   if (!displayReady) return;
@@ -3279,8 +3203,19 @@ void initDisplay() {
   }
 
   if (displayReady) {
-    // Load saved screen timeout setting
-    loadScreenTimeout();
+    // Initialize screen timeout from config (SCREEN_TIMEOUT in seconds, 0 = disabled)
+    // Validate: must be 0 (disabled) or between 10-600 seconds
+    if (SCREEN_TIMEOUT == 0) {
+      screenTimeoutMs = 0;  // Disabled
+      Serial.println("Screen timeout disabled via config");
+    } else if (SCREEN_TIMEOUT >= 10 && SCREEN_TIMEOUT <= 600) {
+      screenTimeoutMs = (unsigned long)SCREEN_TIMEOUT * 1000;
+      Serial.printf("Screen timeout set from config: %d seconds\n", SCREEN_TIMEOUT);
+    } else {
+      // Invalid value, use default 60 seconds
+      screenTimeoutMs = 60000;
+      Serial.printf("Invalid SCREEN_TIMEOUT value (%d), using default 60 seconds\n", SCREEN_TIMEOUT);
+    }
     
     display.startWrite();
     display.fillScreen(TFT_BLACK);
@@ -3588,93 +3523,17 @@ void renderDetailView() {
   display.endWrite();
 }
 
-// Render settings view for screen timeout configuration
-void renderSettingsView() {
-  if (!displayReady) return;
-
-  display.startWrite();
-  display.fillScreen(TFT_BLACK);
-  
-  int16_t width = display.width();
-  int16_t height = display.height();
-
-  // Header
-  display.fillRect(0, 0, width, HEADER_HEIGHT, TFT_NAVY);
-  display.setTextColor(TFT_CYAN, TFT_NAVY);
-  display.setTextSize(2);
-  display.setCursor(10, 15);
-  display.print("Screen Timeout Settings");
-  
-  // Instructions
-  display.setTextColor(TFT_WHITE, TFT_BLACK);
-  display.setCursor(10, HEADER_HEIGHT + 15);
-  display.print("Select screen timeout:");
-  
-  // Timeout options as buttons
-  int btnWidth = (width - 30) / 2;
-  int btnHeight = 50;
-  int startY = HEADER_HEIGHT + 50;
-  
-  const char* optionLabels[] = {"Never", "30 sec", "1 min", "2 min", "5 min", "10 min"};
-  
-  for (int i = 0; i < TIMEOUT_OPTIONS_COUNT; i++) {
-    int row = i / 2;
-    int col = i % 2;
-    int btnX = 10 + col * (btnWidth + 10);
-    int btnY = startY + row * (btnHeight + 10);
-    
-    bool isSelected = (i == selectedTimeoutIndex);
-    uint16_t bgColor = isSelected ? TFT_DARKGREEN : TFT_DARKGREY;
-    uint16_t borderColor = isSelected ? TFT_GREEN : TFT_WHITE;
-    
-    display.fillRoundRect(btnX, btnY, btnWidth, btnHeight, 8, bgColor);
-    display.drawRoundRect(btnX, btnY, btnWidth, btnHeight, 8, borderColor);
-    
-    display.setTextColor(TFT_WHITE, bgColor);
-    display.setTextSize(2);
-    int textX = btnX + (btnWidth - strlen(optionLabels[i]) * CHAR_WIDTH_MULTIPLIER) / 2;
-    display.setCursor(textX, btnY + 15);
-    display.print(optionLabels[i]);
-  }
-  
-  // Save and Close buttons at bottom
-  int bottomBtnY = height - 60;
-  int saveBtnWidth = 140;
-  int closeBtnWidth = 100;
-  
-  // Save button
-  display.fillRoundRect(10, bottomBtnY, saveBtnWidth, 50, 8, TFT_DARKGREEN);
-  display.drawRoundRect(10, bottomBtnY, saveBtnWidth, 50, 8, TFT_GREEN);
-  display.setTextColor(TFT_WHITE, TFT_DARKGREEN);
-  display.setTextSize(2);
-  display.setCursor(35, bottomBtnY + 15);
-  display.print("Save");
-  
-  // Close button
-  display.fillRoundRect(width - closeBtnWidth - 10, bottomBtnY, closeBtnWidth, 50, 8, TFT_MAROON);
-  display.drawRoundRect(width - closeBtnWidth - 10, bottomBtnY, closeBtnWidth, 50, 8, TFT_RED);
-  display.setTextColor(TFT_WHITE, TFT_MAROON);
-  display.setCursor(width - closeBtnWidth + 10, bottomBtnY + 15);
-  display.print("Close");
-  display.endWrite();
-}
-
 // Handle touch input for main view
 void handleMainViewTouch(int16_t x, int16_t y) {
   int16_t width = display.width();
   int16_t height = display.height();
   
-  // Check power button (top right)
+  // Check power button (top right) - simple tap to turn off screen
   int powerBtnX = width - POWER_BUTTON_SIZE - 5;
   int powerBtnY = 5;
   if (x >= powerBtnX && x <= powerBtnX + POWER_BUTTON_SIZE &&
       y >= powerBtnY && y <= powerBtnY + POWER_BUTTON_SIZE) {
-    // Power button touched - check if it's a long press (handled in main loop)
-    // For a short tap, turn off the screen
-    if (!powerButtonPressed) {
-      powerButtonPressed = true;
-      powerButtonPressStart = millis();
-    }
+    turnScreenOff();
     return;
   }
   
@@ -3709,55 +3568,6 @@ void handleMainViewTouch(int16_t x, int16_t y) {
 void handleDetailViewTouch(int16_t x, int16_t y) {
   // Check back button (top left)
   if (x >= 5 && x <= 65 && y >= 5 && y <= 5 + POWER_BUTTON_SIZE) {
-    currentView = VIEW_MAIN;
-    displayNeedsUpdate = true;
-    return;
-  }
-}
-
-// Handle touch input for settings view
-void handleSettingsViewTouch(int16_t x, int16_t y) {
-  int16_t width = display.width();
-  int16_t height = display.height();
-  
-  // Check timeout option buttons
-  int btnWidth = (width - 30) / 2;
-  int btnHeight = 50;
-  int startY = HEADER_HEIGHT + 50;
-  
-  for (int i = 0; i < TIMEOUT_OPTIONS_COUNT; i++) {
-    int row = i / 2;
-    int col = i % 2;
-    int btnX = 10 + col * (btnWidth + 10);
-    int btnY = startY + row * (btnHeight + 10);
-    
-    if (x >= btnX && x <= btnX + btnWidth &&
-        y >= btnY && y <= btnY + btnHeight) {
-      selectedTimeoutIndex = i;
-      displayNeedsUpdate = true;
-      return;
-    }
-  }
-  
-  // Check Save button
-  int bottomBtnY = height - 60;
-  int saveBtnWidth = 140;
-  int closeBtnWidth = 100;
-  
-  if (x >= 10 && x <= 10 + saveBtnWidth &&
-      y >= bottomBtnY && y <= bottomBtnY + 50) {
-    // Save the selected timeout
-    screenTimeoutMs = (unsigned long)TIMEOUT_OPTIONS[selectedTimeoutIndex] * 1000;
-    saveScreenTimeout();
-    currentView = VIEW_MAIN;
-    displayNeedsUpdate = true;
-    return;
-  }
-  
-  // Check Close button
-  if (x >= width - closeBtnWidth - 10 && x <= width - 10 &&
-      y >= bottomBtnY && y <= bottomBtnY + 50) {
-    // Close without saving
     currentView = VIEW_MAIN;
     displayNeedsUpdate = true;
     return;
@@ -3807,28 +3617,8 @@ void handleDisplayLoop() {
           case VIEW_DETAIL:
             handleDetailViewTouch(x, y);
             break;
-          case VIEW_SETTINGS:
-            handleSettingsViewTouch(x, y);
-            break;
           default:
             break;
-        }
-      }
-    } else {
-      // No touch detected
-      
-      // Check if power button was held long enough for settings
-      if (powerButtonPressed) {
-        unsigned long holdTime = now - powerButtonPressStart;
-        if (holdTime >= POWER_BUTTON_HOLD_MS) {
-          // Long press - open settings
-          currentView = VIEW_SETTINGS;
-          displayNeedsUpdate = true;
-          powerButtonPressed = false;
-        } else if (now - lastTouchTime > TOUCH_RELEASE_DELAY_MS) {
-          // Short press - turn off screen
-          turnScreenOff();
-          powerButtonPressed = false;
         }
       }
     }
@@ -3849,9 +3639,6 @@ void handleDisplayLoop() {
         break;
       case VIEW_DETAIL:
         renderDetailView();
-        break;
-      case VIEW_SETTINGS:
-        renderSettingsView();
         break;
       default:
         break;
