@@ -172,6 +172,11 @@ class LGFX : public lgfx::LGFX_Device {
     _panel_instance.light(&_light_instance);
 
     // GT911 Touch controller configuration
+    // Note: pin_rst is set to -1 to prevent LovyanGFX from performing a second reset.
+    // The GT911's I2C address is determined by the INT pin state during reset, and
+    // we perform a manual reset with proper INT pin state in initDisplay() before
+    // calling display.init(). If LovyanGFX performs its own reset, it doesn't set
+    // the INT pin correctly, potentially causing the wrong I2C address to be selected.
     {
       auto cfg = _touch_instance.config();
       cfg.x_min = 0;
@@ -179,7 +184,7 @@ class LGFX : public lgfx::LGFX_Device {
       cfg.y_min = 0;
       cfg.y_max = TFT_HEIGHT - 1;
       cfg.pin_int = TOUCH_INT_PIN;
-      cfg.pin_rst = TOUCH_RST_PIN;
+      cfg.pin_rst = -1;  // Disable LGFX reset - we do manual reset in initDisplay()
       cfg.bus_shared = false;
       cfg.offset_rotation = 0;
       cfg.i2c_port = 1;
