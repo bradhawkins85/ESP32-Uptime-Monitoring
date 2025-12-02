@@ -49,8 +49,9 @@ bool FrameCodec::sendFrame(uint8_t cmd, const std::vector<uint8_t>& payload) {
 }
 
 void FrameCodec::onBytes(const uint8_t* data, size_t len) {
-    // NOTE: This callback runs in BLE task context with limited stack.
-    // Minimize work here to prevent stack overflow.
+    // NOTE: This callback runs in BLE task context with limited stack (~3-4KB).
+    // Avoid Serial.printf and other stack-heavy operations to prevent overflow.
+    // If logging is needed, use simple Serial.print/println sparingly.
     
     // For BLE, each notification is a complete frame
     // First byte is the command/response code

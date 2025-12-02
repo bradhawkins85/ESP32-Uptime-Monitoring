@@ -95,9 +95,9 @@ void CompanionProtocol::onDisconnected() {
 }
 
 void CompanionProtocol::onFrame(uint8_t cmd, const uint8_t* payload, size_t payloadLen) {
-    // NOTE: This callback runs in BLE task context with limited stack.
-    // Minimize work here - avoid Serial.printf which is stack-heavy.
-    // Use simple Serial.print/println for essential logging only.
+    // NOTE: This callback runs in BLE task context with limited stack (~3-4KB).
+    // Avoid Serial.printf and other stack-heavy operations to prevent overflow.
+    // If logging is needed, use simple Serial.print/println sparingly.
     
     // Check if this looks like continuation data for a fragmented response.
     // MeshCore response codes are in the low range (0x00-MAX_KNOWN_RESPONSE_CODE).
