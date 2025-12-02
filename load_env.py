@@ -68,8 +68,9 @@ def get_build_flag(key, value):
         return f"-D{macro_name}={value}"
     else:
         # String value - wrap in escaped quotes
-        # Escape backslashes and double quotes for the shell
-        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        # Escape backslashes, double quotes, single quotes, and spaces for the shell
+        # Double quotes need triple escaping to survive shell -> compiler -> C string
+        escaped = value.replace("\\", "\\\\").replace('"', '\\\\\\"').replace("'", "\\'").replace(" ", "\\ ")
         return f'-D{macro_name}=\\"{escaped}\\"'
 
 
