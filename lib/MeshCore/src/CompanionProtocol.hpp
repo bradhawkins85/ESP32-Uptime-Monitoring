@@ -135,9 +135,10 @@ public:
      * Uses CMD_SEND_TXT_MSG to send to a specific node identified by public key
      * @param pubKeyHex 64-character hex string representing the 32-byte public key
      * @param message Message text
+     * @param password Optional password for Room Server authentication (empty for direct messages)
      * @return true if message was sent successfully
      */
-    bool sendTextMessageToContact(const String& pubKeyHex, const String& message);
+    bool sendTextMessageToContact(const String& pubKeyHex, const String& message, const String& password = "");
 
     /**
      * Find a channel by name and get its index

@@ -135,6 +135,7 @@ The firmware now acts as a BLE **client** that connects to the Heltec T114 (Mesh
      const uint32_t BLE_PAIRING_PIN = 123456;      // the MeshCore pairing PIN
      const char* BLE_MESH_CHANNEL_NAME = "alerts"; // channel to use on the T114 (must already exist on the device)
      const char* BLE_MESH_ROOM_SERVER_ID = "";     // Room Server public key (64 hex characters)
+     const char* BLE_MESH_ROOM_SERVER_PASSWORD = ""; // Room Server password for authentication
      // Optional: local name shown by the ESP32 itself
      const char* BLE_DEVICE_NAME = "ESP32-Uptime";
      ```
@@ -144,12 +145,15 @@ The firmware now acts as a BLE **client** that connects to the Heltec T114 (Mesh
      -DBLE_PAIRING_PIN_VALUE=123456
      -DBLE_MESH_CHANNEL_NAME_VALUE=\"alerts\"
      -DBLE_MESH_ROOM_SERVER_ID_VALUE=\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"
+     -DBLE_MESH_ROOM_SERVER_PASSWORD_VALUE=\"your-room-password\"
      -DBLE_DEVICE_NAME_VALUE=\"MyMeshBridge\"
      ```
    
    **Note:** The channel must be pre-configured on the MeshCore device before use. The ESP32 will not create or modify the channel. You can configure either a channel, a Room Server, or both. Messages will be sent to all configured destinations.
 
    **Room Server ID:** The Room Server ID is the 32-byte (64 hex character) public key of the Room Server node. You can obtain this from the MeshCore companion app or the Room Server's configuration. Messages sent to a Room Server are delivered as direct messages to that specific node.
+
+   **Room Server Password:** Room Servers require authentication to post messages. Set `BLE_MESH_ROOM_SERVER_PASSWORD` to the password configured on the Room Server. The password is prepended to the message for authentication.
 
 2. **Flash the firmware and watch the serial monitor**
    - On boot the ESP32 scans for the MeshCore name. Logs will show `MeshCore peer found, attempting connection...` and `Connected to MeshCore peer...` once the link is up. If the peer is missing or the PIN is wrong, the error message appears in `/api/mesh/status`.

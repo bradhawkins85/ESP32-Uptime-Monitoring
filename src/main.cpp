@@ -909,6 +909,7 @@ void initWebServer() {
     doc["channelConfigured"] = isMeshChannelConfigured();
     doc["roomServerId"] = BLE_MESH_ROOM_SERVER_ID;
     doc["roomServerConfigured"] = isMeshRoomServerConfigured();
+    doc["roomServerPasswordSet"] = strlen(BLE_MESH_ROOM_SERVER_PASSWORD) > 0;
     doc["channelReady"] = isMeshChannelReady();
     doc["protocolState"] = getMeshProtocolState();
     doc["lastError"] = getMeshLastError();
@@ -2476,7 +2477,7 @@ bool sendMeshCoreNotificationWithStatus(const String& title, const String& messa
         
         // Send to room server if configured
         if (isMeshRoomServerConfigured()) {
-          if (protocol->sendTextMessageToContact(BLE_MESH_ROOM_SERVER_ID, fullMessage)) {
+          if (protocol->sendTextMessageToContact(BLE_MESH_ROOM_SERVER_ID, fullMessage, BLE_MESH_ROOM_SERVER_PASSWORD)) {
             Serial.println("MeshCore room server notification sent successfully");
             roomServerSent = true;
           } else {
@@ -2743,7 +2744,7 @@ void processMeshCoreQueue() {
         
         // Send to room server if configured
         if (isMeshRoomServerConfigured()) {
-          if (protocol->sendTextMessageToContact(BLE_MESH_ROOM_SERVER_ID, fullMessage)) {
+          if (protocol->sendTextMessageToContact(BLE_MESH_ROOM_SERVER_ID, fullMessage, BLE_MESH_ROOM_SERVER_PASSWORD)) {
             Serial.printf("Retry: MeshCore room server notification sent for %s\n", notification.serviceId.c_str());
             sent = true;
           } else {

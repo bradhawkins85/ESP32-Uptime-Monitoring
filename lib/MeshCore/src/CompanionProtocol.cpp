@@ -547,7 +547,7 @@ bool CompanionProtocol::sendTextMessageToChannel(uint8_t channelIndex, const Str
     return false;  // Return false for unexpected response
 }
 
-bool CompanionProtocol::sendTextMessageToContact(const String& pubKeyHex, const String& message) {
+bool CompanionProtocol::sendTextMessageToContact(const String& pubKeyHex, const String& message, const String& password) {
     if (m_state < State::SessionReady) {
         m_lastError = "Session not ready";
         return false;
@@ -583,7 +583,17 @@ bool CompanionProtocol::sendTextMessageToContact(const String& pubKeyHex, const 
         pubKey[i] = static_cast<uint8_t>((high << 4) | low);
     }
 
-    size_t textLen = message.length();
+    // For Room Server authentication, prepend password to message with separator
+    // Format: "password:message" - Room Servers parse this to authenticate
+    String fullMessage;
+    if (password.length() > 0) {
+        fullMessage = password + ":" + message;
+        Serial.println("CompanionProtocol: using Room Server authentication");
+    } else {
+        fullMessage = message;
+    }
+
+    size_t textLen = fullMessage.length();
     if (textLen > MAX_TEXT_MESSAGE_LEN) {
         textLen = MAX_TEXT_MESSAGE_LEN;
     }
@@ -608,8 +618,8 @@ bool CompanionProtocol::sendTextMessageToContact(const String& pubKeyHex, const 
     payload.push_back(static_cast<uint8_t>((timestamp >> 16) & 0xFF));
     payload.push_back(static_cast<uint8_t>((timestamp >> 24) & 0xFF));
     
-    // Message text
-    payload.insert(payload.end(), message.begin(), message.begin() + textLen);
+    // Message text (with password prefix if authenticated)
+    payload.insert(payload.end(), fullMessage.begin(), fullMessage.begin() + textLen);
 
     Serial.printf("CompanionProtocol: sending DM to contact (pubkey: %s...)\n", 
                   pubKeyHex.substring(0, 8).c_str());
