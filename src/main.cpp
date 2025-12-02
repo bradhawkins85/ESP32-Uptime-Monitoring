@@ -3060,6 +3060,92 @@ void processMeshCoreQueue() {
     return;
   }
   
+#ifdef HAS_LORA_RADIO
+  // LoRa mode: Send notifications directly via the built-in radio
+  // No WiFi/radio coexistence issues - both can run simultaneously
+  
+  Serial.println("Processing MeshCore queue (LoRa)...");
+  
+  // Set LED to white to indicate MeshCore communication
+  setLedStatus(LED_STATUS_MESHCORE);
+  lastMeshCoreRetry = currentTime;
+  
+  // Initialize transport if not already initialized
+  if (meshTransport == nullptr) {
+    LoRaTransport::Config config;
+    config.pinNss = LORA_NSS;
+    config.pinDio1 = LORA_DIO1;
+    config.pinRst = LORA_RST;
+    config.pinBusy = LORA_BUSY;
+    config.pinMosi = LORA_MOSI;
+    config.pinMiso = LORA_MISO;
+    config.pinSck = LORA_SCK;
+    config.frequency = LORA_FREQUENCY;
+    config.bandwidth = LORA_BANDWIDTH;
+    config.spreadingFactor = LORA_SPREADING_FACTOR;
+    config.codingRate = LORA_CODING_RATE;
+    config.syncWord = LORA_SYNC_WORD;
+    config.txPower = LORA_TX_POWER;
+    
+    meshTransport = new LoRaTransport(config);
+    meshCodec = new FrameCodec(*meshTransport);
+    
+    if (!meshTransport->init()) {
+      Serial.println("ERROR: LoRa radio initialization failed");
+      delete meshCodec;
+      meshCodec = nullptr;
+      delete meshTransport;
+      meshTransport = nullptr;
+      return;
+    }
+  }
+  
+  // Send all pending MeshCore notifications
+  for (int i = 0; i < queuedNotificationCount; i++) {
+    QueuedNotification& notification = notificationQueue[i];
+    if (notification.meshPending) {
+      String fullMessage = notification.title + ": " + notification.message;
+      
+      // Build MeshCore packet for channel message
+      std::vector<uint8_t> payload;
+      const uint8_t CMD_SEND_CHANNEL_TXT_MSG = 3;
+      const uint8_t TXT_TYPE_PLAIN = 0;
+      const uint8_t channelIndex = 0;  // Default channel for broadcast
+      
+      payload.push_back(TXT_TYPE_PLAIN);
+      payload.push_back(channelIndex);
+      
+      // Timestamp (little-endian, 4 bytes)
+      time_t now = time(nullptr);
+      uint32_t timestamp = static_cast<uint32_t>(now);
+      payload.push_back(static_cast<uint8_t>(timestamp & 0xFF));
+      payload.push_back(static_cast<uint8_t>((timestamp >> 8) & 0xFF));
+      payload.push_back(static_cast<uint8_t>((timestamp >> 16) & 0xFF));
+      payload.push_back(static_cast<uint8_t>((timestamp >> 24) & 0xFF));
+      
+      // Message text
+      size_t textLen = fullMessage.length();
+      if (textLen > 140) textLen = 140;  // MeshCore max message length
+      payload.insert(payload.end(), fullMessage.begin(), fullMessage.begin() + textLen);
+      
+      // Send using frame codec
+      if (meshCodec->sendFrame(CMD_SEND_CHANNEL_TXT_MSG, payload)) {
+        Serial.printf("Retry: MeshCore LoRa notification sent for %s\n", notification.serviceId.c_str());
+        notification.meshPending = false;
+      } else {
+        Serial.printf("MeshCore LoRa send failed for %s: %s\n", 
+                      notification.serviceId.c_str(), meshTransport->getLastError().c_str());
+      }
+      
+      // Small delay between messages
+      delay(100);
+    }
+  }
+  
+  Serial.println("MeshCore LoRa batch operation complete");
+  
+#else
+  // BLE mode: Need to batch operations due to WiFi/BLE coexistence
   Serial.println("Processing MeshCore queue (batched BLE operation)...");
   
   // Set LED to white to indicate MeshCore communication
@@ -3179,6 +3265,7 @@ void processMeshCoreQueue() {
   monitoringPaused = false;
   
   Serial.println("MeshCore batch operation complete");
+#endif
   
   // Clean up any notifications that have all channels sent
   for (int i = 0; i < queuedNotificationCount; i++) {
