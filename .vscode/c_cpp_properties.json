@@ -10,6 +10,7 @@
             "includePath": [
                 "/Users/bradhawkins/Documents/GitHub/ESP32-Uptime-Monitoring/include",
                 "/Users/bradhawkins/Documents/GitHub/ESP32-Uptime-Monitoring/src",
+                "/Users/bradhawkins/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
                 "/Users/bradhawkins/.platformio/packages/framework-arduinoespressif32/libraries/HTTPClient/src",
                 "/Users/bradhawkins/.platformio/packages/framework-arduinoespressif32/libraries/WiFiClientSecure/src",
                 "/Users/bradhawkins/Documents/GitHub/ESP32-Uptime-Monitoring/lib/MeshCore/src",
@@ -250,7 +251,6 @@
                 "/Users/bradhawkins/.platformio/packages/framework-arduinoespressif32/libraries/Ticker/src",
                 "/Users/bradhawkins/.platformio/packages/framework-arduinoespressif32/libraries/USB/src",
                 "/Users/bradhawkins/.platformio/packages/framework-arduinoespressif32/libraries/WiFiProv/src",
-                "/Users/bradhawkins/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
                 ""
             ],
             "browse": {
@@ -258,6 +258,7 @@
                 "path": [
                     "/Users/bradhawkins/Documents/GitHub/ESP32-Uptime-Monitoring/include",
                     "/Users/bradhawkins/Documents/GitHub/ESP32-Uptime-Monitoring/src",
+                    "/Users/bradhawkins/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
                     "/Users/bradhawkins/.platformio/packages/framework-arduinoespressif32/libraries/HTTPClient/src",
                     "/Users/bradhawkins/.platformio/packages/framework-arduinoespressif32/libraries/WiFiClientSecure/src",
                     "/Users/bradhawkins/Documents/GitHub/ESP32-Uptime-Monitoring/lib/MeshCore/src",
@@ -498,7 +499,6 @@
                     "/Users/bradhawkins/.platformio/packages/framework-arduinoespressif32/libraries/Ticker/src",
                     "/Users/bradhawkins/.platformio/packages/framework-arduinoespressif32/libraries/USB/src",
                     "/Users/bradhawkins/.platformio/packages/framework-arduinoespressif32/libraries/WiFiProv/src",
-                    "/Users/bradhawkins/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
                     ""
                 ]
             },

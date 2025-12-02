@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <Wire.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <ESPAsyncWebServer.h>
@@ -163,13 +164,17 @@ class LGFX : public lgfx::LGFX_Device {
     }
     _panel_instance.setBus(&_bus_instance);
 
-    // Backlight (PWM)
+    // Backlight (PWM) - DISABLED in LGFX
+    // We handle backlight manually because it shares the pin with Touch Reset.
+    // Letting LGFX control it would cause touch controller resets.
+    /*
     {
       auto cfg = _light_instance.config();
       cfg.pin_bl = TFT_BL_PIN;
       _light_instance.config(cfg);
     }
     _panel_instance.light(&_light_instance);
+    */
 
     // GT911 Touch controller configuration
     // Note: pin_rst is set to -1 to prevent LovyanGFX from performing a second reset.
@@ -192,6 +197,13 @@ class LGFX : public lgfx::LGFX_Device {
       cfg.pin_sda = TOUCH_SDA_PIN;
       cfg.pin_scl = TOUCH_SCL_PIN;
       cfg.freq = 400000;
+      // Try to detect address or default to 0x14 (which we tried to force)
+      // If the scanner found 0x5D, we should probably use that, but we can't easily pass it here dynamically
+      // without changing the class structure. For now, let's stick to 0x14 as we force INT HIGH.
+      // If INT pin drive is weak, it might latch 0x5D (INT LOW).
+      // Let's try 0x5D if 0x14 fails? LGFX doesn't auto-scan.
+      // We'll stick to 0x14 since we drive INT HIGH.
+      cfg.i2c_addr = 0x14;  
       _touch_instance.config(cfg);
       _panel_instance.setTouch(&_touch_instance);
     }
@@ -531,6 +543,9 @@ const int MAX_SERVICES = 20;
 Service services[MAX_SERVICES];
 int serviceCount = 0;
 
+// Filesystem readiness flag to avoid LittleFS access before mount
+static bool littleFsReady = false;
+
 // Port check constants
 const int PORT_CHECK_TIMEOUT_MS = 5000;  // TCP connection timeout for port checks
 
@@ -632,15 +647,25 @@ void removeQueuedNotification(int index);
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);
+  
+  // Wait for serial port to connect (up to 5 seconds) to ensure we catch boot logs
+  // This is critical for ESP32-S3 USB CDC
+  unsigned long startWait = millis();
+  while (!Serial && (millis() - startWait) < 5000) {
+    delay(10);
+  }
+  delay(2000); // Give the terminal a moment to attach
 
-  Serial.println("Starting ESP32 Uptime Monitor...");
+  Serial.println("\n\n========================================");
+  Serial.println("   ESP32 Uptime Monitor Starting...");
+  Serial.println("========================================");
 
   // Initialize LED to booting state (blue pulsing)
   setLedStatus(LED_STATUS_BOOTING);
 
   // Initialize filesystem
   initFileSystem();
+  Serial.printf("LittleFS ready: %s\n", littleFsReady ? "yes" : "no");
 
   // Initialize WiFi
   initWiFi();
@@ -674,6 +699,26 @@ void loop() {
   static unsigned long lastCheckTime = 0;
   static bool hasPerformedChecks = false;  // Track if any check has been performed
   unsigned long currentTime = millis();
+
+#ifdef HAS_LCD
+  // Re-scan I2C periodically if touch is not ready (helps debug startup issues)
+  static unsigned long lastI2CScan = 0;
+  if (!touchReady && (currentTime - lastI2CScan > 5000)) {
+    lastI2CScan = currentTime;
+    Serial.println("Touch not ready, re-scanning I2C...");
+    Wire.begin(TOUCH_SDA_PIN, TOUCH_SCL_PIN);
+    int devicesFound = 0;
+    for (byte address = 1; address < 127; address++) {
+      Wire.beginTransmission(address);
+      if (Wire.endTransmission() == 0) {
+        Serial.printf("I2C device found at address 0x%02X\n", address);
+        devicesFound++;
+      }
+    }
+    if (devicesFound == 0) Serial.println("No I2C devices found");
+    Wire.end();
+  }
+#endif
 
   // Update LED animation (call frequently for smooth pulsing)
   updateLed();
@@ -857,9 +902,12 @@ bool ensureAuthenticated(AsyncWebServerRequest* request) {
 }
 
 void initFileSystem() {
+  littleFsReady = false;
+
   // First attempt: try to mount without formatting
   if (LittleFS.begin(false)) {
     Serial.println("LittleFS mounted successfully");
+    littleFsReady = true;
     return;
   }
 
@@ -870,6 +918,7 @@ void initFileSystem() {
   // calling format() directly on corrupted or uninitialized flash.
   if (LittleFS.begin(true)) {
     Serial.println("LittleFS formatted and mounted successfully");
+    littleFsReady = true;
     return;
   }
 
@@ -888,10 +937,12 @@ void initFileSystem() {
   // Now try to mount the freshly formatted filesystem
   if (!LittleFS.begin(false)) {
     Serial.println("Critical: Failed to mount LittleFS after successful format!");
+    littleFsReady = false;
     return;
   }
 
   Serial.println("LittleFS mounted successfully after format");
+  littleFsReady = true;
 }
 
 void disconnectMeshCore() {
@@ -2895,6 +2946,11 @@ void processMeshCoreQueue() {
 }
 
 void saveServices() {
+  if (!littleFsReady) {
+    Serial.println("LittleFS not mounted; skipping saveServices");
+    return;
+  }
+
   File file = LittleFS.open("/services.json", "w");
   if (!file) {
     Serial.println("Failed to open services.json for writing");
@@ -2938,6 +2994,11 @@ void saveServices() {
 }
 
 void loadServices() {
+  if (!littleFsReady) {
+    Serial.println("LittleFS not mounted; skipping loadServices");
+    return;
+  }
+
   File file = LittleFS.open("/services.json", "r");
   if (!file) {
     Serial.println("No services.json found, starting fresh");
@@ -3029,9 +3090,19 @@ void recordActivity() {
 
 // Load screen timeout setting from LittleFS
 void loadScreenTimeout() {
+  if (!littleFsReady) {
+    Serial.println("LittleFS not mounted; using default screen timeout");
+    return;
+  }
+
+  if (!LittleFS.exists(SCREEN_TIMEOUT_FILE)) {
+    Serial.println("No screen timeout setting found, using default");
+    return;
+  }
+
   File file = LittleFS.open(SCREEN_TIMEOUT_FILE, "r");
   if (!file) {
-    Serial.println("No screen timeout setting found, using default");
+    Serial.println("Failed to open screen timeout file");
     return;
   }
   
@@ -3054,6 +3125,11 @@ void loadScreenTimeout() {
 
 // Save screen timeout setting to LittleFS
 void saveScreenTimeout() {
+  if (!littleFsReady) {
+    Serial.println("LittleFS not mounted; cannot save screen timeout");
+    return;
+  }
+
   File file = LittleFS.open(SCREEN_TIMEOUT_FILE, "w");
   if (!file) {
     Serial.println("Failed to save screen timeout setting");
@@ -3070,8 +3146,10 @@ void turnScreenOff() {
   if (!displayReady) return;
   // Cannot turn off backlight (GPIO 38) because it resets touch.
   // Cannot use PWM (dimming) because it resets touch.
-  // Solution: Keep backlight ON (255) and draw black screen to simulate off.
-  display.setBrightness(255);
+  // Solution: Keep backlight ON (HIGH) and draw black screen to simulate off.
+  if (TFT_BL_PIN >= 0) {
+    digitalWrite(TFT_BL_PIN, HIGH);
+  }
   display.fillScreen(TFT_BLACK);
   currentView = VIEW_OFF;
   Serial.println("Screen 'turned off' (Black screen, BL On)");
@@ -3080,8 +3158,10 @@ void turnScreenOff() {
 // Turn screen on (restore backlight)
 void turnScreenOn() {
   if (!displayReady) return;
-  // Backlight is already on
-  display.setBrightness(255);
+  // Ensure backlight is ON (HIGH)
+  if (TFT_BL_PIN >= 0) {
+    digitalWrite(TFT_BL_PIN, HIGH);
+  }
   currentView = VIEW_MAIN;
   recordActivity();
   displayNeedsUpdate = true;
@@ -3121,7 +3201,34 @@ void initDisplay() {
     // Additional delay to allow GT911 I2C to stabilize after INT released
     delay(50);
     
-    Serial.println("GT911 touch controller reset complete (address 0x14)");
+    Serial.println("GT911 touch controller reset complete");
+
+    // Debug: Scan I2C bus to verify GT911 presence and address
+    Serial.printf("Scanning I2C bus (SDA=%d, SCL=%d)...\n", TOUCH_SDA_PIN, TOUCH_SCL_PIN);
+    
+    // Initialize Wire with explicit pins
+    if (!Wire.begin(TOUCH_SDA_PIN, TOUCH_SCL_PIN)) {
+      Serial.println("Failed to initialize I2C bus!");
+    } else {
+      int devicesFound = 0;
+      uint8_t foundAddr = 0;
+      for (byte address = 1; address < 127; address++) {
+        Wire.beginTransmission(address);
+        byte error = Wire.endTransmission();
+        if (error == 0) {
+          Serial.printf("I2C device found at address 0x%02X\n", address);
+          devicesFound++;
+          if (address == 0x14 || address == 0x5D) {
+            foundAddr = address;
+          }
+        }
+      }
+      if (devicesFound == 0) Serial.println("No I2C devices found");
+      
+      // Important: End Wire so LGFX can initialize its own I2C driver
+      Wire.end(); 
+      delay(50);  // Ensure bus is free
+    }
   }
   
   displayReady = display.init();
@@ -3130,10 +3237,12 @@ void initDisplay() {
   display.setTextColor(TFT_WHITE, TFT_BLACK);
 
   if (TFT_BL_PIN >= 0) {
-    // Must use 255 (Max) to keep GPIO 38 HIGH. PWM (dimming) would reset touch controller.
-    display.setBrightness(255);
-    // Give GT911 time to boot if backlight manipulation caused a reset
-    delay(100);
+    // Manually enable backlight (GPIO 38 HIGH)
+    // This also takes the Touch Controller out of Reset
+    pinMode(TFT_BL_PIN, OUTPUT);
+    digitalWrite(TFT_BL_PIN, HIGH);
+    // Give GT911 time to boot after taking it out of reset
+    delay(200);
   }
 
   // Verify touch controller is working by checking if touch object exists and
