@@ -54,6 +54,8 @@ public:
     // broader range to avoid missing valid user-created channels.
     static constexpr uint8_t MAX_MESH_CHANNELS = 16;
     static constexpr size_t MAX_RX_BUFFER_SIZE = 256;
+    // Size of a MeshCore public key (for contact/room server addressing)
+    static constexpr size_t PUB_KEY_SIZE = 32;
     
     // Timeout in milliseconds to wait for PUSH_CODE_SEND_CONFIRMED after
     // receiving the initial message acknowledgment. This ensures the remote
@@ -127,6 +129,16 @@ public:
      * @return true if message was sent successfully
      */
     bool sendTextMessageToChannel(uint8_t channelIndex, const String& message);
+
+    /**
+     * Send a text message to a contact (room server or direct message)
+     * Uses CMD_SEND_TXT_MSG to send to a specific node identified by public key
+     * @param pubKeyHex 64-character hex string representing the 32-byte public key
+     * @param message Message text
+     * @param password Optional password for Room Server authentication (empty for direct messages)
+     * @return true if message was sent successfully
+     */
+    bool sendTextMessageToContact(const String& pubKeyHex, const String& message, const String& password = "");
 
     /**
      * Find a channel by name and get its index
