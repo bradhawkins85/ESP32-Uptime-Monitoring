@@ -2940,6 +2940,7 @@ void initDisplay() {
     if (TOUCH_INT_PIN >= 0) {
       pinMode(TOUCH_INT_PIN, OUTPUT);
       digitalWrite(TOUCH_INT_PIN, HIGH);
+      delay(1);  // Ensure INT state is stable before reset sequence
     }
     
     // Perform reset sequence
