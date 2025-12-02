@@ -624,14 +624,10 @@ void removeQueuedNotification(int index);
 
 void setup() {
   Serial.begin(115200);
-  
-  // Wait for serial port to connect (up to 5 seconds) to ensure we catch boot logs
-  // This is critical for ESP32-S3 USB CDC
-  unsigned long startWait = millis();
-  while (!Serial && (millis() - startWait) < 5000) {
-    delay(10);
-  }
-  delay(2000); // Give the terminal a moment to attach
+  // Simple delay for serial initialization - matches working ESP32-4848S040 implementation
+  // from ESP32-Uptime-Monitoring-Touch. The previous complex !Serial wait loop was causing
+  // issues with serial output on this board.
+  delay(1000);
 
   Serial.println("\n\n========================================");
   Serial.println("   ESP32 Uptime Monitor Starting...");
