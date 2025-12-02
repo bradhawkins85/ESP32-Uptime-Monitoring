@@ -1538,6 +1538,10 @@ void checkServices() {
 
   unsigned long currentTime = millis();
 
+#ifdef HAS_LCD
+  bool anyServiceChecked = false;  // Track if any service was checked this cycle
+#endif
+
   for (int i = 0; i < serviceCount; i++) {
     // Skip disabled services
     if (!services[i].enabled) {
@@ -1561,6 +1565,10 @@ void checkServices() {
 
     services[i].lastCheck = currentTime;
     bool wasUp = services[i].isUp;
+
+#ifdef HAS_LCD
+    anyServiceChecked = true;  // Mark that at least one service was checked
+#endif
 
     // Perform the actual check
     bool checkResult = false;
@@ -1642,13 +1650,20 @@ void checkServices() {
     }
 
 #ifdef HAS_LCD
-    // Update display if viewing detail view for this service, OR if in main view
-    // This ensures the display reflects current service states in both views
-    if (currentView == VIEW_MAIN || i == currentServiceIndex) {
+    // Update display if viewing detail view and this specific service was checked
+    if (currentView == VIEW_DETAIL && i == currentServiceIndex) {
       displayNeedsUpdate = true;
     }
 #endif
   }
+
+#ifdef HAS_LCD
+  // Update display if in main view and any service was checked
+  // This is done once outside the loop to avoid redundant flag setting
+  if (currentView == VIEW_MAIN && anyServiceChecked) {
+    displayNeedsUpdate = true;
+  }
+#endif
 }
 
 // Helper function to match text against a POSIX extended regex pattern
