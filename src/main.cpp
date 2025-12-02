@@ -76,15 +76,13 @@
 #endif
 
 #ifndef TOUCH_INT_PIN
-#define TOUCH_INT_PIN 40  // Touch interrupt pin
+// Guition reference design does not wire GT911 INT to the ESP32-S3, so default to unused.
+#define TOUCH_INT_PIN -1
 #endif
 
 #ifndef TOUCH_RST_PIN
-// Touch reset pin - Hardware design note:
-// GPIO 38 is shared between touch reset and backlight control on this board.
-// The GT911 touch controller requires a reset pulse during initialization,
-// after which the pin is reconfigured for PWM backlight control by LovyanGFX.
-#define TOUCH_RST_PIN 38
+// GT911 reset is not connected on most Guition ESP32-4848S040 revisions; leave unmanaged by default.
+#define TOUCH_RST_PIN -1
 #endif
 
 // LGFX device configured for ST7701 parallel RGB (16-bit)
@@ -177,11 +175,9 @@ class LGFX : public lgfx::LGFX_Device {
     */
 
     // GT911 Touch controller configuration
-    // Note: pin_rst is set to -1 to prevent LovyanGFX from performing a second reset.
-    // The GT911's I2C address is determined by the INT pin state during reset, and
-    // we perform a manual reset with proper INT pin state in initDisplay() before
-    // calling display.init(). If LovyanGFX performs its own reset, it doesn't set
-    // the INT pin correctly, potentially causing the wrong I2C address to be selected.
+    // Note: pin_rst is set to -1 so LovyanGFX will not attempt a hardware reset.
+    // Several Guition ESP32-4848S040 revisions do not route the GT911 RST/INT pins,
+    // so initDisplay() performs a manual reset only when GPIOs are defined.
     {
       auto cfg = _touch_instance.config();
       cfg.x_min = 0;
@@ -189,21 +185,15 @@ class LGFX : public lgfx::LGFX_Device {
       cfg.y_min = 0;
       cfg.y_max = TFT_HEIGHT - 1;
       cfg.pin_int = TOUCH_INT_PIN;
-      cfg.pin_rst = -1;  // Disable LGFX reset - we do manual reset in initDisplay()
+      cfg.pin_rst = -1;  // Leave GT911 reset unmanaged unless initDisplay() handles it
       cfg.bus_shared = false;
       cfg.offset_rotation = 0;
       cfg.i2c_port = 1;
-      cfg.i2c_addr = 0x14;  // GT911 address when INT is HIGH during reset
+      cfg.i2c_addr = 0x14;  // Initial probe address; driver falls back to 0x5D if needed
       cfg.pin_sda = TOUCH_SDA_PIN;
       cfg.pin_scl = TOUCH_SCL_PIN;
       cfg.freq = 400000;
-      // Try to detect address or default to 0x14 (which we tried to force)
-      // If the scanner found 0x5D, we should probably use that, but we can't easily pass it here dynamically
-      // without changing the class structure. For now, let's stick to 0x14 as we force INT HIGH.
-      // If INT pin drive is weak, it might latch 0x5D (INT LOW).
-      // Let's try 0x5D if 0x14 fails? LGFX doesn't auto-scan.
-      // We'll stick to 0x14 since we drive INT HIGH.
-      cfg.i2c_addr = 0x14;  
+      // Touch_GT911::init() automatically retries with 0x5D if 0x14 fails, so no extra logic needed here.
       _touch_instance.config(cfg);
       _panel_instance.setTouch(&_touch_instance);
     }
@@ -3105,50 +3095,58 @@ void initDisplay() {
       digitalWrite(TOUCH_INT_PIN, HIGH);
       delay(5);  // Ensure INT state is stable before reset sequence
     }
-    
+
     // Perform reset sequence - timing is critical for GT911 address selection
     pinMode(TOUCH_RST_PIN, OUTPUT);
     digitalWrite(TOUCH_RST_PIN, LOW);
     delay(20);  // GT911 requires minimum 10ms reset pulse, use 20ms for margin
     digitalWrite(TOUCH_RST_PIN, HIGH);
     delay(100);  // Wait for GT911 address latch and internal initialization
-    
+
     // Release INT pin for normal interrupt operation
     if (TOUCH_INT_PIN >= 0) {
       pinMode(TOUCH_INT_PIN, INPUT);
     }
-    
+
     // Additional delay to allow GT911 I2C to stabilize after INT released
     delay(50);
-    
-    Serial.println("GT911 touch controller reset complete");
 
-    // Debug: Scan I2C bus to verify GT911 presence and address
-    Serial.printf("Scanning I2C bus (SDA=%d, SCL=%d)...\n", TOUCH_SDA_PIN, TOUCH_SCL_PIN);
-    
-    // Initialize Wire with explicit pins
-    if (!Wire.begin(TOUCH_SDA_PIN, TOUCH_SCL_PIN)) {
-      Serial.println("Failed to initialize I2C bus!");
-    } else {
-      int devicesFound = 0;
-      uint8_t foundAddr = 0;
-      for (byte address = 1; address < 127; address++) {
-        Wire.beginTransmission(address);
-        byte error = Wire.endTransmission();
-        if (error == 0) {
-          Serial.printf("I2C device found at address 0x%02X\n", address);
-          devicesFound++;
-          if (address == 0x14 || address == 0x5D) {
-            foundAddr = address;
-          }
+    Serial.println("GT911 touch controller reset complete");
+  } else {
+    Serial.println("GT911 reset pin not managed (TOUCH_RST_PIN < 0); skipping manual reset");
+  }
+
+  // Debug: Scan I2C bus to verify GT911 presence and address
+  Serial.printf("Scanning I2C bus (SDA=%d, SCL=%d)...\n", TOUCH_SDA_PIN, TOUCH_SCL_PIN);
+
+  // Initialize Wire with explicit pins
+  if (!Wire.begin(TOUCH_SDA_PIN, TOUCH_SCL_PIN)) {
+    Serial.println("Failed to initialize I2C bus!");
+  } else {
+    int devicesFound = 0;
+    uint8_t foundAddr = 0;
+    for (byte address = 1; address < 127; address++) {
+      Wire.beginTransmission(address);
+      byte error = Wire.endTransmission();
+      if (error == 0) {
+        Serial.printf("I2C device found at address 0x%02X\n", address);
+        devicesFound++;
+        if (address == 0x14 || address == 0x5D) {
+          foundAddr = address;
         }
       }
-      if (devicesFound == 0) Serial.println("No I2C devices found");
-      
-      // Important: End Wire so LGFX can initialize its own I2C driver
-      Wire.end(); 
-      delay(50);  // Ensure bus is free
     }
+    if (devicesFound == 0) Serial.println("No I2C devices found");
+
+    if (foundAddr == 0x14) {
+      Serial.println("GT911 detected at 0x14 (INT held high during boot)");
+    } else if (foundAddr == 0x5D) {
+      Serial.println("GT911 detected at 0x5D (default address)");
+    }
+
+    // Important: End Wire so LGFX can initialize its own I2C driver
+    Wire.end();
+    delay(50);  // Ensure bus is free
   }
   
   displayReady = display.init();
