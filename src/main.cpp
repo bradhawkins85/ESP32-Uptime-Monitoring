@@ -3096,7 +3096,9 @@ void initDisplay() {
     // Load saved screen timeout setting
     loadScreenTimeout();
     
+    display.startWrite();
     display.fillScreen(TFT_BLACK);
+    display.endWrite();
     currentView = VIEW_MAIN;
     recordActivity();
     displayNeedsUpdate = true;
@@ -3158,6 +3160,7 @@ uint16_t getServiceStatusColor(const Service& svc) {
 void renderMainView() {
   if (!displayReady) return;
 
+  display.startWrite();
   display.fillScreen(TFT_BLACK);
   
   int16_t width = display.width();
@@ -3174,6 +3177,7 @@ void renderMainView() {
     display.println("No services configured.");
     display.setCursor(10, HEADER_HEIGHT + 50);
     display.println("Add services via web UI.");
+    display.endWrite();
     return;
   }
 
@@ -3233,6 +3237,7 @@ void renderMainView() {
     display.setCursor(width / 2 - 40, height - 15);
     display.printf("+ %d more", serviceCount - maxRows * cols);
   }
+  display.endWrite();
 }
 
 // Render detail view for a single service
@@ -3244,6 +3249,7 @@ void renderDetailView() {
     return;
   }
 
+  display.startWrite();
   display.fillScreen(TFT_BLACK);
   
   int16_t width = display.width();
@@ -3393,12 +3399,14 @@ void renderDetailView() {
     display.setCursor(10, contentY);
     display.print(errorDisplay);
   }
+  display.endWrite();
 }
 
 // Render settings view for screen timeout configuration
 void renderSettingsView() {
   if (!displayReady) return;
 
+  display.startWrite();
   display.fillScreen(TFT_BLACK);
   
   int16_t width = display.width();
@@ -3462,6 +3470,7 @@ void renderSettingsView() {
   display.setTextColor(TFT_WHITE, TFT_MAROON);
   display.setCursor(width - closeBtnWidth + 10, bottomBtnY + 15);
   display.print("Close");
+  display.endWrite();
 }
 
 // Handle touch input for main view
