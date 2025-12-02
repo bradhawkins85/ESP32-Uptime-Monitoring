@@ -1,8 +1,6 @@
 #include "BLECentralTransport.hpp"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
 
 // Define static constexpr members for pre-C++17 ODR compliance
 constexpr const char* BLECentralTransport::NUS_SERVICE_UUID;
