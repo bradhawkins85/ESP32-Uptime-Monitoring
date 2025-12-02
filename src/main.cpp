@@ -1150,7 +1150,7 @@ void initWebServer() {
   });
 
   // update service (enable/disable/pause)
-  server.on("^\\/api\\/services\\/([a-zA-Z0-9]+)$", HTTP_PATCH, [](AsyncWebServerRequest *request) {}, NULL,
+  server.on("/api/services/*", HTTP_PATCH, [](AsyncWebServerRequest *request) {}, NULL,
     [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
       if (!ensureAuthenticated(request)) {
         return;
