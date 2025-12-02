@@ -3673,9 +3673,11 @@ void handleDisplayLoop() {
     displayNeedsUpdate = false;
   }
   
-  // Periodically refresh main view to update status changes
+  // Periodically refresh display to update status changes
+  // Auto-refresh applies to both main view (all services) and detail view (single service)
   static unsigned long lastAutoRefresh = 0;
-  if (currentView == VIEW_MAIN && now - lastAutoRefresh >= DISPLAY_AUTO_REFRESH_MS) {
+  if ((currentView == VIEW_MAIN || currentView == VIEW_DETAIL) && 
+      now - lastAutoRefresh >= DISPLAY_AUTO_REFRESH_MS) {
     displayNeedsUpdate = true;
     lastAutoRefresh = now;
   }
