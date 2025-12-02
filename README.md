@@ -99,29 +99,57 @@ pip install platformio
 
 ## Configuration
 
-Before deploying, you need to configure your WiFi credentials:
+The recommended way to configure the firmware is using a `.env` file, which keeps your sensitive values out of source control.
 
-1. Open `src/main.cpp`
-2. Find the following lines near the top of the file:
-   ```cpp
-   const char* WIFI_SSID = "xxx";
-   const char* WIFI_PASSWORD = "xxx";
+### Quick Start with .env File (Recommended)
+
+1. Copy the example environment file:
+   ```bash
+   cp .env.example .env
    ```
-3. Replace `"xxx"` with your actual WiFi network name and password:
-   ```cpp
-   const char* WIFI_SSID = "YourNetworkName";
-   const char* WIFI_PASSWORD = "YourPassword";
+
+2. Edit `.env` with your configuration values:
+   ```bash
+   # Required: WiFi credentials
+   WIFI_SSID=YourNetworkName
+   WIFI_PASSWORD=YourPassword
+
+   # Optional: Web interface authentication
+   WEB_AUTH_USERNAME=admin
+   WEB_AUTH_PASSWORD=strong-password
+
+   # Optional: Notification settings
+   NTFY_TOPIC=my-alerts
+   DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
    ```
+
+3. Build and upload normally - values are automatically loaded from `.env`
+
+The `.env` file is gitignored, so your secrets won't be committed to version control.
+
+### Alternative: PlatformIO Build Flags
+
+You can also provide configuration values directly in `platformio.ini`:
+
+```ini
+build_flags =
+    -DWIFI_SSID_VALUE=\"YourNetworkName\"
+    -DWIFI_PASSWORD_VALUE=\"YourPassword\"
+```
+
+### Alternative: Edit config.cpp Directly
+
+For advanced users, you can edit `src/config.cpp` directly. Note that this file is gitignored to prevent accidentally committing secrets.
 
 ### Protecting the web interface
 
 Optional HTTP Basic Authentication can be enabled to prevent unauthenticated users from adding, importing, or deleting services.
 
-Add the following values to `src/config.cpp` (or provide them via PlatformIO build flags) to require credentials when accessing the interface or modifying services:
+Add the following values to your `.env` file to require credentials when accessing the interface or modifying services:
 
-```cpp
-const char* WEB_AUTH_USERNAME = "admin";
-const char* WEB_AUTH_PASSWORD = "strong-password";
+```bash
+WEB_AUTH_USERNAME=admin
+WEB_AUTH_PASSWORD=strong-password
 ```
 
 ### Pairing with MeshCore over BLE
@@ -129,16 +157,16 @@ const char* WEB_AUTH_PASSWORD = "strong-password";
 The firmware now acts as a BLE **client** that connects to the Heltec T114 (MeshCore) using its advertised name and pairing PIN, then writes alert messages to either a MeshCore channel, a Room Server, or both.
 
 1. **Set the MeshCore peer name, PIN, and destinations**
-   - Edit `src/config.cpp` or provide build flags so the ESP32 knows how to reach the T114:
-     ```cpp
-     const char* BLE_PEER_NAME = "Heltec-T114";   // the T114's advertised name
-     const uint32_t BLE_PAIRING_PIN = 123456;      // the MeshCore pairing PIN
-     const char* BLE_MESH_CHANNEL_NAME = "alerts"; // channel to use on the T114 (must already exist on the device)
-     const char* BLE_MESH_ROOM_SERVER_ID = "";     // Room Server public key (64 hex characters)
-     const char* BLE_MESH_ROOM_SERVER_PASSWORD = ""; // Room Server password for authentication
-     // Optional: local name shown by the ESP32 itself
-     const char* BLE_DEVICE_NAME = "ESP32-Uptime";
+   - Add the following values to your `.env` file so the ESP32 knows how to reach the T114:
+     ```bash
+     BLE_PEER_NAME=Heltec-T114        # the T114's advertised name
+     BLE_PAIRING_PIN=123456           # the MeshCore pairing PIN
+     BLE_MESH_CHANNEL_NAME=alerts     # channel to use on the T114 (must already exist on the device)
+     BLE_MESH_ROOM_SERVER_ID=         # Room Server public key (64 hex characters)
+     BLE_MESH_ROOM_SERVER_PASSWORD=   # Room Server password for authentication
+     BLE_DEVICE_NAME=ESP32-Uptime     # Optional: local name shown by the ESP32 itself
      ```
+   - Alternatively, use PlatformIO build flags:
      ```ini
      ; platformio.ini
      -DBLE_PEER_NAME_VALUE=\"Heltec-T114\"
@@ -176,37 +204,25 @@ The firmware now acts as a BLE **client** that connects to the Heltec T114 (Mesh
 
 Set an ntfy topic to receive alerts whenever a monitored service goes offline. Optional bearer or basic authentication is also supported for secured ntfy servers.
 
-1. In `src/main.cpp`, locate the ntfy configuration block:
-   ```cpp
-   const char* NTFY_SERVER = "https://ntfy.sh";
-   const char* NTFY_TOPIC = "";
-   const char* NTFY_ACCESS_TOKEN = "";
-   const char* NTFY_USERNAME = "";
-   const char* NTFY_PASSWORD = "";
+1. Add the following values to your `.env` file:
+   ```bash
+   NTFY_SERVER=https://ntfy.sh
+   NTFY_TOPIC=esp32-uptime
+   # use either a bearer token or basic auth credentials
+   NTFY_ACCESS_TOKEN=my-token
+   # NTFY_USERNAME=user
+   # NTFY_PASSWORD=pass
    ```
-2. Replace `NTFY_TOPIC` with your topic name (for self-hosted ntfy, update `NTFY_SERVER` as well). Provide authentication if required by your server:
-   ```cpp
-   const char* NTFY_SERVER = "https://ntfy.sh";
-   const char* NTFY_TOPIC = "esp32-uptime";
-   // use either a bearer token or basic auth credentials
-   const char* NTFY_ACCESS_TOKEN = "my-token";
-   // const char* NTFY_USERNAME = "user";
-   // const char* NTFY_PASSWORD = "pass";
-   ```
-   3. Flash the firmware again. The device will publish a message to the topic whenever it detects that a service transitioned to a down state, and another when the service comes back online.
+2. Flash the firmware. The device will publish a message to the topic whenever it detects that a service transitioned to a down state, and another when the service comes back online.
 
 ### Enabling Discord notifications
 
 Send alerts to a Discord channel by configuring a webhook URL.
 
 1. Create a webhook in your target Discord channel (Channel Settings → Integrations → Webhooks) and copy the webhook URL.
-2. In `src/config.cpp`, set the webhook value:
-   ```cpp
-   const char* DISCORD_WEBHOOK_URL = "";
-   ```
-   Replace the empty string with your webhook URL. You can also provide this at build time with a PlatformIO flag:
-   ```ini
-   -DDISCORD_WEBHOOK_URL_VALUE=\"https://discord.com/api/webhooks/...\"
+2. Add the webhook URL to your `.env` file:
+   ```bash
+   DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
    ```
 3. Rebuild and flash the firmware. A message will be sent to the webhook whenever a service changes state between up and down.
 
@@ -214,43 +230,27 @@ Send alerts to a Discord channel by configuring a webhook URL.
 
 Configure an SMTP relay to receive email alerts for uptime changes.
 
-1. In `src/config.cpp`, set your SMTP details:
-   ```cpp
-   const char* SMTP_SERVER = "";
-   const int SMTP_PORT = 587;
-   const bool SMTP_USE_TLS = true;
-   const char* SMTP_USERNAME = "";
-   const char* SMTP_PASSWORD = "";
-   const char* SMTP_FROM_ADDRESS = "";
-   const char* SMTP_TO_ADDRESS = ""; // Comma-separated list is supported
+1. Add the following values to your `.env` file:
+   ```bash
+   SMTP_SERVER=smtp.example.com
+   SMTP_PORT=587
+   SMTP_USE_TLS=true
+   SMTP_USERNAME=user@example.com
+   SMTP_PASSWORD=password
+   SMTP_FROM_ADDRESS=monitor@example.com
+   SMTP_TO_ADDRESS=alerts@example.com
    ```
-2. For most servers you can provide the same values through PlatformIO build flags instead of editing the file directly:
-   ```ini
-   -DSMTP_SERVER_VALUE=\"smtp.example.com\"
-   -DSMTP_PORT_VALUE=587
-   -DSMTP_USE_TLS_VALUE=true
-   -DSMTP_USERNAME_VALUE=\"user@example.com\"
-   -DSMTP_PASSWORD_VALUE=\"password\"
-   -DSMTP_FROM_ADDRESS_VALUE=\"monitor@example.com\"
-   -DSMTP_TO_ADDRESS_VALUE=\"alerts@example.com\"
-   ```
-3. Rebuild and flash the firmware. The device will send an email whenever a service changes between up and down states. Multiple recipients can be provided as a comma-separated list.
+2. Rebuild and flash the firmware. The device will send an email whenever a service changes between up and down states. Multiple recipients can be provided as a comma-separated list.
 
 ### Enabling boot notifications
 
 Optionally send a notification to all configured channels when the device boots up.
 
-1. In `src/config.cpp`, find the boot notification configuration and change the default value:
-   ```cpp
-   #ifndef BOOT_NOTIFICATION_ENABLED_VALUE
-   #define BOOT_NOTIFICATION_ENABLED_VALUE true  // Change from false to true
-   #endif
+1. Add the following value to your `.env` file:
+   ```bash
+   BOOT_NOTIFICATION_ENABLED=true
    ```
-2. Alternatively, enable via PlatformIO build flag (no file edits needed):
-   ```ini
-   -DBOOT_NOTIFICATION_ENABLED_VALUE=true
-   ```
-3. Rebuild and flash the firmware. When the device boots and connects to WiFi, it will send a notification to all configured channels (ntfy, Discord, SMTP, MeshCore) indicating that the monitor has started and showing the device IP address.
+2. Rebuild and flash the firmware. When the device boots and connects to WiFi, it will send a notification to all configured channels (ntfy, Discord, SMTP, MeshCore) indicating that the monitor has started and showing the device IP address.
 
 ## Deploying to ESP32
 
