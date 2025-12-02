@@ -1140,11 +1140,11 @@ void initWebServer() {
       if (passThreshold < 1) passThreshold = 1;
       newService.passThreshold = passThreshold;
 
-      int failThreshold = doc["failThreshold"] | 1;
+      int failThreshold = doc["failThreshold"] | 3;
       if (failThreshold < 1) failThreshold = 1;
       newService.failThreshold = failThreshold;
 
-      int rearmCount = doc["rearmCount"] | 0;
+      int rearmCount = doc["rearmCount"] | 1440;
       if (rearmCount < 0) rearmCount = 0;
       newService.rearmCount = rearmCount;
 
@@ -1411,10 +1411,10 @@ void initWebServer() {
         int passThreshold = obj["passThreshold"] | 1;
         if (passThreshold < 1) passThreshold = 1;
 
-        int failThreshold = obj["failThreshold"] | 1;
+        int failThreshold = obj["failThreshold"] | 3;
         if (failThreshold < 1) failThreshold = 1;
 
-        int rearmCount = obj["rearmCount"] | 0;
+        int rearmCount = obj["rearmCount"] | 1440;
         if (rearmCount < 0) rearmCount = 0;
 
         Service newService;
@@ -3003,8 +3003,8 @@ void loadServices() {
     services[serviceCount].expectedResponse = obj["expectedResponse"].as<String>();
     services[serviceCount].checkInterval = obj["checkInterval"];
     services[serviceCount].passThreshold = obj["passThreshold"] | 1;
-    services[serviceCount].failThreshold = obj["failThreshold"] | 1;
-    services[serviceCount].rearmCount = obj["rearmCount"] | 0;
+    services[serviceCount].failThreshold = obj["failThreshold"] | 3;
+    services[serviceCount].rearmCount = obj["rearmCount"] | 1440;
     // SNMP-specific fields
     services[serviceCount].snmpOid = obj["snmpOid"] | "";
     services[serviceCount].snmpCommunity = obj["snmpCommunity"] | "public";
@@ -4064,7 +4064,7 @@ String getWebPage() {
                 <div class="form-row">
                     <div class="form-group">
                         <label for="failThreshold">Fail Threshold</label>
-                        <input type="number" id="failThreshold" value="1" required min="1" title="Number of consecutive failures before marking as DOWN">
+                        <input type="number" id="failThreshold" value="3" required min="1" title="Number of consecutive failures before marking as DOWN">
                     </div>
 
                     <div class="form-group">
@@ -4075,7 +4075,7 @@ String getWebPage() {
 
                 <div class="form-group">
                     <label for="rearmCount">Re-arm Alert Count (0 = disabled)</label>
-                    <input type="number" id="rearmCount" value="0" required min="0" title="Number of failed checks before re-alerting while service is DOWN. Set to 0 to disable.">
+                    <input type="number" id="rearmCount" value="1440" required min="0" title="Number of failed checks before re-alerting while service is DOWN. Set to 0 to disable.">
                 </div>
 
                 <div class="form-group hidden" id="pathGroup">
@@ -4474,8 +4474,8 @@ String getWebPage() {
             document.getElementById('expectedResponse').value = service.expectedResponse || '*';
             document.getElementById('checkInterval').value = service.checkInterval || 60;
             document.getElementById('passThreshold').value = service.passThreshold || 1;
-            document.getElementById('failThreshold').value = service.failThreshold || 1;
-            document.getElementById('rearmCount').value = service.rearmCount || 0;
+            document.getElementById('failThreshold').value = service.failThreshold || 3;
+            document.getElementById('rearmCount').value = (service.rearmCount !== undefined ? service.rearmCount : 1440);
             document.getElementById('snmpOid').value = service.snmpOid || '';
             document.getElementById('snmpCommunity').value = service.snmpCommunity || 'public';
             document.getElementById('snmpCompareOp').value = service.snmpCompareOp || '=';
