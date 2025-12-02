@@ -1,6 +1,9 @@
 # Local configuration source containing secrets
 src/config.cpp
 
+# Environment file with sensitive configuration (use .env.example as template)
+.env
+
 # PlatformIO build artifacts
 .pio/
 
