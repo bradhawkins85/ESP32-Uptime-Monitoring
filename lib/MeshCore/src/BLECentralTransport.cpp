@@ -162,13 +162,25 @@ bool BLECentralTransport::send(const uint8_t* data, size_t len) {
         // Copy data to non-const buffer as BLE library expects mutable data
         // This ensures we don't violate the const contract of the interface
         std::vector<uint8_t> buffer(data, data + len);
+        
+        // Yield to the scheduler BEFORE the blocking BLE write to allow pending
+        // tasks to run and feed the system watchdog. This prevents TG0WDT_SYS_RST
+        // (Timer Group 0 Watchdog Timer System Reset) when the BLE stack holds
+        // resources for an extended period during writeValue().
+        // 
+        // The Timer Group 0 Watchdog monitors overall system responsiveness and
+        // triggers a reset if the system becomes unresponsive. BLE operations,
+        // especially write-with-response, can block the current task while waiting
+        // for peripheral acknowledgment. Yielding before and after these operations
+        // ensures other tasks (including those that feed the watchdog) can run.
+        vTaskDelay(pdMS_TO_TICKS(10));
+        
         // Use Write With Response for reliable protocol commands
         m_txCharacteristic->writeValue(buffer.data(), buffer.size(), true);
         
-        // Yield to the scheduler after BLE write to prevent Task Watchdog Timer reset.
-        // The writeValue() call with response=true blocks until the peripheral acknowledges,
-        // which can take variable time depending on BLE connection parameters and peripheral
-        // processing. This delay ensures the FreeRTOS scheduler can run and feed the watchdog.
+        // Yield again after the BLE write completes to allow the scheduler to run.
+        // This is especially important when multiple frames are sent in sequence,
+        // as the cumulative blocking time could exceed watchdog thresholds.
         vTaskDelay(pdMS_TO_TICKS(10));
         
         return true;

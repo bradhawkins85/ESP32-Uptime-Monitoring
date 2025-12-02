@@ -1,5 +1,7 @@
 #include "FrameCodec.hpp"
 #include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 // Define static constexpr members for pre-C++17 ODR compliance
 constexpr size_t FrameCodec::MAX_FRAME_PAYLOAD;
@@ -40,6 +42,12 @@ bool FrameCodec::sendFrame(uint8_t cmd, const uint8_t* payload, size_t payloadLe
     }
 
     Serial.printf("FrameCodec TX: cmd 0x%02X, payload length %d\n", cmd, (int)payloadLen);
+    
+    // Yield to scheduler before transport send to ensure system watchdog is fed.
+    // This prevents TG0WDT_SYS_RST (Timer Group 0 Watchdog Timer System Reset)
+    // when sending messages, especially after channel lookup operations that
+    // may have accumulated processing time without yielding.
+    vTaskDelay(pdMS_TO_TICKS(5));
     
     return m_transport.send(frame.data(), frame.size());
 }
