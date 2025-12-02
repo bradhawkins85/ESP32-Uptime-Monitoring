@@ -3049,15 +3049,20 @@ void saveScreenTimeout() {
 // Turn screen off (backlight off)
 void turnScreenOff() {
   if (!displayReady) return;
-  display.setBrightness(0);
+  // Cannot turn off backlight (GPIO 38) because it resets touch.
+  // Cannot use PWM (dimming) because it resets touch.
+  // Solution: Keep backlight ON (255) and draw black screen to simulate off.
+  display.setBrightness(255);
+  display.fillScreen(TFT_BLACK);
   currentView = VIEW_OFF;
-  Serial.println("Screen turned off");
+  Serial.println("Screen 'turned off' (Black screen, BL On)");
 }
 
 // Turn screen on (restore backlight)
 void turnScreenOn() {
   if (!displayReady) return;
-  display.setBrightness(200);
+  // Backlight is already on
+  display.setBrightness(255);
   currentView = VIEW_MAIN;
   recordActivity();
   displayNeedsUpdate = true;
@@ -3106,7 +3111,10 @@ void initDisplay() {
   display.setTextColor(TFT_WHITE, TFT_BLACK);
 
   if (TFT_BL_PIN >= 0) {
-    display.setBrightness(200);
+    // Must use 255 (Max) to keep GPIO 38 HIGH. PWM (dimming) would reset touch controller.
+    display.setBrightness(255);
+    // Give GT911 time to boot if backlight manipulation caused a reset
+    delay(100);
   }
 
   // Verify touch controller is working by checking if touch object exists and
