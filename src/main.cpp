@@ -4415,6 +4415,7 @@ String getWebPage() {
                         </div>
                         ` : ''}
                         <div class="service-actions">
+                            <button class="btn btn-secondary" onclick="editService('${service.id}')">Edit</button>
                             ${service.enabled 
                                 ? `<button class="btn btn-secondary" onclick="toggleService('${service.id}', false)">Disable</button>`
                                 : `<button class="btn btn-primary" onclick="toggleService('${service.id}', true)">Enable</button>`
@@ -4446,6 +4447,59 @@ String getWebPage() {
                     loadServices();
                 } else {
                     showAlert('Failed to delete service', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
+        }
+
+        // Edit service - loads values into form and deletes the old service
+        async function editService(id) {
+            const service = services.find(s => s.id === id);
+            if (!service) {
+                showAlert('Service not found', 'error');
+                return;
+            }
+
+            // Confirm before editing (since the old service will be deleted)
+            if (!confirm('Edit this service? The current configuration will be loaded into the form for modification.')) {
+                return;
+            }
+
+            // Populate form with existing values
+            document.getElementById('serviceName').value = service.name;
+            document.getElementById('serviceType').value = service.type;
+            document.getElementById('serviceHost').value = service.host || '';
+            document.getElementById('servicePort').value = service.port || 80;
+            document.getElementById('servicePath').value = service.path || '/';
+            document.getElementById('serviceUrl').value = service.url || '';
+            document.getElementById('expectedResponse').value = service.expectedResponse || '*';
+            document.getElementById('checkInterval').value = service.checkInterval || 60;
+            document.getElementById('passThreshold').value = service.passThreshold || 1;
+            document.getElementById('failThreshold').value = service.failThreshold || 1;
+            document.getElementById('rearmCount').value = service.rearmCount || 0;
+            document.getElementById('snmpOid').value = service.snmpOid || '';
+            document.getElementById('snmpCommunity').value = service.snmpCommunity || 'public';
+            document.getElementById('snmpCompareOp').value = service.snmpCompareOp || '=';
+            document.getElementById('snmpExpectedValue').value = service.snmpExpectedValue || '';
+
+            // Trigger change event to show/hide appropriate fields
+            document.getElementById('serviceType').dispatchEvent(new Event('change'));
+
+            // Scroll to form
+            document.getElementById('addServiceForm').scrollIntoView({ behavior: 'smooth' });
+
+            // Delete the old service
+            try {
+                const response = await fetch(`/api/services/${id}`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok) {
+                    showAlert('Service loaded for editing. Make your changes and click "Add Service" to save.', 'success');
+                    loadServices();
+                } else {
+                    showAlert('Failed to load service for editing', 'error');
                 }
             } catch (error) {
                 showAlert('Error: ' + error.message, 'error');
