@@ -255,8 +255,28 @@ bool CompanionProtocol::waitForExpectedResponse(unsigned long timeoutMs) {
             return true;
         }
         
-        // If we got a push notification, ignore it and continue waiting
+        // If we got a push notification, check for known vendor aliases that
+        // should be treated as the expected response (compatibility mode).
         if (isPushNotification(m_lastResponseCode)) {
+            // Vendor-specific: some devices send 0x88 as a send-confirmation push
+            // instead of the documented PUSH_CODE_SEND_CONFIRMED (0x0F). Treat
+            // 0x88 as equivalent to PUSH_CODE_SEND_CONFIRMED when we are
+            // waiting for that confirmation. Log the mapping for diagnostics.
+            if (m_lastResponseCode == 0x88 &&
+                (m_expectedCode == PUSH_CODE_SEND_CONFIRMED || m_altCode == PUSH_CODE_SEND_CONFIRMED)) {
+                Serial.printf("CompanionProtocol: treating vendor push 0x%02X as send confirmation\n", m_lastResponseCode);
+                // Capture buffer and report success to caller as if PUSH_CODE_SEND_CONFIRMED arrived
+                m_capturedResponseCode = PUSH_CODE_SEND_CONFIRMED;
+                m_capturedBufferLen = m_rxPayloadLen;
+                if (m_rxPayloadLen > 0 && m_rxPayloadLen <= sizeof(m_capturedBuffer)) {
+                    memcpy(m_capturedBuffer, m_rxBuffer, m_rxPayloadLen);
+                }
+                // Clear expected response tracking
+                m_expectedCode = 0xFF;
+                m_altCode = 0xFF;
+                return true;
+            }
+
             Serial.printf("CompanionProtocol: ignoring push notification 0x%02X while waiting for 0x%02X\n",
                           m_lastResponseCode, m_expectedCode);
             m_responseReceived = false;  // Reset to wait for next response
