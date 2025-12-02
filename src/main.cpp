@@ -434,6 +434,101 @@ static CompanionProtocol* meshProtocol = nullptr;
 bool bleOperationInProgress = false;
 bool monitoringPaused = false;
 
+// MeshCore protocol constants for LoRa mode
+// These match the CompanionProtocol constants used in BLE mode
+#ifdef HAS_LORA_RADIO
+static constexpr uint8_t LORA_CMD_SEND_CHANNEL_TXT_MSG = 3;
+static constexpr uint8_t LORA_TXT_TYPE_PLAIN = 0;
+static constexpr uint8_t LORA_DEFAULT_CHANNEL_INDEX = 0;  // Default channel for broadcast
+static constexpr size_t LORA_MAX_TEXT_MESSAGE_LEN = 140;
+
+/**
+ * Ensure LoRa transport is initialized
+ * Creates the transport and codec if not already created
+ * @return true if transport is ready to use
+ */
+bool ensureLoRaTransportInitialized() {
+  if (meshTransport != nullptr && meshTransport->isInitialized()) {
+    return true;
+  }
+  
+  // Clean up any partial state
+  if (meshCodec != nullptr) {
+    delete meshCodec;
+    meshCodec = nullptr;
+  }
+  if (meshTransport != nullptr) {
+    delete meshTransport;
+    meshTransport = nullptr;
+  }
+  
+  // Create and initialize transport
+  LoRaTransport::Config config;
+  config.pinNss = LORA_NSS;
+  config.pinDio1 = LORA_DIO1;
+  config.pinRst = LORA_RST;
+  config.pinBusy = LORA_BUSY;
+  config.pinMosi = LORA_MOSI;
+  config.pinMiso = LORA_MISO;
+  config.pinSck = LORA_SCK;
+  config.frequency = LORA_FREQUENCY;
+  config.bandwidth = LORA_BANDWIDTH;
+  config.spreadingFactor = LORA_SPREADING_FACTOR;
+  config.codingRate = LORA_CODING_RATE;
+  config.syncWord = LORA_SYNC_WORD;
+  config.txPower = LORA_TX_POWER;
+  
+  meshTransport = new LoRaTransport(config);
+  meshCodec = new FrameCodec(*meshTransport);
+  
+  if (!meshTransport->init()) {
+    Serial.println("ERROR: LoRa radio initialization failed");
+    delete meshCodec;
+    meshCodec = nullptr;
+    delete meshTransport;
+    meshTransport = nullptr;
+    return false;
+  }
+  
+  return true;
+}
+
+/**
+ * Build and send a MeshCore channel message via LoRa
+ * @param message Message text to send
+ * @return true if message was sent successfully
+ */
+bool sendLoRaChannelMessage(const String& message) {
+  if (!ensureLoRaTransportInitialized()) {
+    return false;
+  }
+  
+  // Build MeshCore packet for channel message
+  std::vector<uint8_t> payload;
+  
+  payload.push_back(LORA_TXT_TYPE_PLAIN);
+  payload.push_back(LORA_DEFAULT_CHANNEL_INDEX);
+  
+  // Timestamp (little-endian, 4 bytes)
+  time_t now = time(nullptr);
+  uint32_t timestamp = static_cast<uint32_t>(now);
+  payload.push_back(static_cast<uint8_t>(timestamp & 0xFF));
+  payload.push_back(static_cast<uint8_t>((timestamp >> 8) & 0xFF));
+  payload.push_back(static_cast<uint8_t>((timestamp >> 16) & 0xFF));
+  payload.push_back(static_cast<uint8_t>((timestamp >> 24) & 0xFF));
+  
+  // Message text (truncate if too long)
+  size_t textLen = message.length();
+  if (textLen > LORA_MAX_TEXT_MESSAGE_LEN) {
+    textLen = LORA_MAX_TEXT_MESSAGE_LEN;
+  }
+  payload.insert(payload.end(), message.begin(), message.begin() + textLen);
+  
+  // Send using frame codec
+  return meshCodec->sendFrame(LORA_CMD_SEND_CHANNEL_TXT_MSG, payload);
+}
+#endif
+
 // Minimum valid Unix timestamp for NTP validation (2021-01-01 00:00:00 UTC)
 // Used to detect if time has been properly synchronized via NTP
 const time_t MIN_VALID_TIMESTAMP = 1609459200;
@@ -2326,65 +2421,15 @@ void sendMeshCoreNotification(const String& title, const String& message) {
   // Build the message: combine title and message
   String fullMessage = title + ": " + message;
   
-  // If transport not initialized, create it now
-  if (meshTransport == nullptr) {
-    LoRaTransport::Config config;
-    config.pinNss = LORA_NSS;
-    config.pinDio1 = LORA_DIO1;
-    config.pinRst = LORA_RST;
-    config.pinBusy = LORA_BUSY;
-    config.pinMosi = LORA_MOSI;
-    config.pinMiso = LORA_MISO;
-    config.pinSck = LORA_SCK;
-    config.frequency = LORA_FREQUENCY;
-    config.bandwidth = LORA_BANDWIDTH;
-    config.spreadingFactor = LORA_SPREADING_FACTOR;
-    config.codingRate = LORA_CODING_RATE;
-    config.syncWord = LORA_SYNC_WORD;
-    config.txPower = LORA_TX_POWER;
-    
-    meshTransport = new LoRaTransport(config);
-    meshCodec = new FrameCodec(*meshTransport);
-    
-    if (!meshTransport->init()) {
-      Serial.println("ERROR: LoRa radio initialization failed");
-      delete meshCodec;
-      meshCodec = nullptr;
-      delete meshTransport;
-      meshTransport = nullptr;
-      return;
-    }
-  }
-  
-  // Build MeshCore packet for channel message
-  // Format: CMD_SEND_CHANNEL_TXT_MSG(1) + txt_type(1) + channel_index(1) + timestamp(4) + text
-  // For LoRa broadcast, we use channel index 0 (default public channel)
-  std::vector<uint8_t> payload;
-  const uint8_t CMD_SEND_CHANNEL_TXT_MSG = 3;
-  const uint8_t TXT_TYPE_PLAIN = 0;
-  const uint8_t channelIndex = 0;  // Default channel for broadcast
-  
-  payload.push_back(TXT_TYPE_PLAIN);
-  payload.push_back(channelIndex);
-  
-  // Timestamp (little-endian, 4 bytes)
-  time_t now = time(nullptr);
-  uint32_t timestamp = static_cast<uint32_t>(now);
-  payload.push_back(static_cast<uint8_t>(timestamp & 0xFF));
-  payload.push_back(static_cast<uint8_t>((timestamp >> 8) & 0xFF));
-  payload.push_back(static_cast<uint8_t>((timestamp >> 16) & 0xFF));
-  payload.push_back(static_cast<uint8_t>((timestamp >> 24) & 0xFF));
-  
-  // Message text
-  size_t textLen = fullMessage.length();
-  if (textLen > 140) textLen = 140;  // MeshCore max message length
-  payload.insert(payload.end(), fullMessage.begin(), fullMessage.begin() + textLen);
-  
-  // Send using frame codec
-  if (meshCodec->sendFrame(CMD_SEND_CHANNEL_TXT_MSG, payload)) {
+  // Send using helper function
+  if (sendLoRaChannelMessage(fullMessage)) {
     Serial.println("MeshCore LoRa notification sent successfully");
   } else {
-    Serial.printf("MeshCore LoRa notification failed: %s\n", meshTransport->getLastError().c_str());
+    if (meshTransport != nullptr) {
+      Serial.printf("MeshCore LoRa notification failed: %s\n", meshTransport->getLastError().c_str());
+    } else {
+      Serial.println("MeshCore LoRa notification failed: transport not initialized");
+    }
   }
   
 #else
@@ -2750,66 +2795,16 @@ bool sendMeshCoreNotificationWithStatus(const String& title, const String& messa
   // Build the message: combine title and message
   String fullMessage = title + ": " + message;
   
-  // If transport not initialized, create it now
-  if (meshTransport == nullptr) {
-    LoRaTransport::Config config;
-    config.pinNss = LORA_NSS;
-    config.pinDio1 = LORA_DIO1;
-    config.pinRst = LORA_RST;
-    config.pinBusy = LORA_BUSY;
-    config.pinMosi = LORA_MOSI;
-    config.pinMiso = LORA_MISO;
-    config.pinSck = LORA_SCK;
-    config.frequency = LORA_FREQUENCY;
-    config.bandwidth = LORA_BANDWIDTH;
-    config.spreadingFactor = LORA_SPREADING_FACTOR;
-    config.codingRate = LORA_CODING_RATE;
-    config.syncWord = LORA_SYNC_WORD;
-    config.txPower = LORA_TX_POWER;
-    
-    meshTransport = new LoRaTransport(config);
-    meshCodec = new FrameCodec(*meshTransport);
-    
-    if (!meshTransport->init()) {
-      Serial.println("ERROR: LoRa radio initialization failed");
-      delete meshCodec;
-      meshCodec = nullptr;
-      delete meshTransport;
-      meshTransport = nullptr;
-      return false;
-    }
-  }
-  
-  // Build MeshCore packet for channel message
-  // Format: CMD_SEND_CHANNEL_TXT_MSG(1) + txt_type(1) + channel_index(1) + timestamp(4) + text
-  // For LoRa broadcast, we use channel index 0 (default public channel)
-  std::vector<uint8_t> payload;
-  const uint8_t CMD_SEND_CHANNEL_TXT_MSG = 3;
-  const uint8_t TXT_TYPE_PLAIN = 0;
-  const uint8_t channelIndex = 0;  // Default channel for broadcast
-  
-  payload.push_back(TXT_TYPE_PLAIN);
-  payload.push_back(channelIndex);
-  
-  // Timestamp (little-endian, 4 bytes)
-  time_t now = time(nullptr);
-  uint32_t timestamp = static_cast<uint32_t>(now);
-  payload.push_back(static_cast<uint8_t>(timestamp & 0xFF));
-  payload.push_back(static_cast<uint8_t>((timestamp >> 8) & 0xFF));
-  payload.push_back(static_cast<uint8_t>((timestamp >> 16) & 0xFF));
-  payload.push_back(static_cast<uint8_t>((timestamp >> 24) & 0xFF));
-  
-  // Message text
-  size_t textLen = fullMessage.length();
-  if (textLen > 140) textLen = 140;  // MeshCore max message length
-  payload.insert(payload.end(), fullMessage.begin(), fullMessage.begin() + textLen);
-  
-  // Send using frame codec
-  bool success = meshCodec->sendFrame(CMD_SEND_CHANNEL_TXT_MSG, payload);
+  // Send using helper function
+  bool success = sendLoRaChannelMessage(fullMessage);
   if (success) {
     Serial.println("MeshCore LoRa notification sent successfully");
   } else {
-    Serial.printf("MeshCore LoRa notification failed: %s\n", meshTransport->getLastError().c_str());
+    if (meshTransport != nullptr) {
+      Serial.printf("MeshCore LoRa notification failed: %s\n", meshTransport->getLastError().c_str());
+    } else {
+      Serial.println("MeshCore LoRa notification failed: transport not initialized");
+    }
   }
   
   return success;
@@ -3070,71 +3065,25 @@ void processMeshCoreQueue() {
   setLedStatus(LED_STATUS_MESHCORE);
   lastMeshCoreRetry = currentTime;
   
-  // Initialize transport if not already initialized
-  if (meshTransport == nullptr) {
-    LoRaTransport::Config config;
-    config.pinNss = LORA_NSS;
-    config.pinDio1 = LORA_DIO1;
-    config.pinRst = LORA_RST;
-    config.pinBusy = LORA_BUSY;
-    config.pinMosi = LORA_MOSI;
-    config.pinMiso = LORA_MISO;
-    config.pinSck = LORA_SCK;
-    config.frequency = LORA_FREQUENCY;
-    config.bandwidth = LORA_BANDWIDTH;
-    config.spreadingFactor = LORA_SPREADING_FACTOR;
-    config.codingRate = LORA_CODING_RATE;
-    config.syncWord = LORA_SYNC_WORD;
-    config.txPower = LORA_TX_POWER;
-    
-    meshTransport = new LoRaTransport(config);
-    meshCodec = new FrameCodec(*meshTransport);
-    
-    if (!meshTransport->init()) {
-      Serial.println("ERROR: LoRa radio initialization failed");
-      delete meshCodec;
-      meshCodec = nullptr;
-      delete meshTransport;
-      meshTransport = nullptr;
-      return;
-    }
+  // Ensure transport is initialized
+  if (!ensureLoRaTransportInitialized()) {
+    Serial.println("ERROR: LoRa radio initialization failed");
+    return;
   }
   
-  // Send all pending MeshCore notifications
+  // Send all pending MeshCore notifications using helper function
   for (int i = 0; i < queuedNotificationCount; i++) {
     QueuedNotification& notification = notificationQueue[i];
     if (notification.meshPending) {
       String fullMessage = notification.title + ": " + notification.message;
       
-      // Build MeshCore packet for channel message
-      std::vector<uint8_t> payload;
-      const uint8_t CMD_SEND_CHANNEL_TXT_MSG = 3;
-      const uint8_t TXT_TYPE_PLAIN = 0;
-      const uint8_t channelIndex = 0;  // Default channel for broadcast
-      
-      payload.push_back(TXT_TYPE_PLAIN);
-      payload.push_back(channelIndex);
-      
-      // Timestamp (little-endian, 4 bytes)
-      time_t now = time(nullptr);
-      uint32_t timestamp = static_cast<uint32_t>(now);
-      payload.push_back(static_cast<uint8_t>(timestamp & 0xFF));
-      payload.push_back(static_cast<uint8_t>((timestamp >> 8) & 0xFF));
-      payload.push_back(static_cast<uint8_t>((timestamp >> 16) & 0xFF));
-      payload.push_back(static_cast<uint8_t>((timestamp >> 24) & 0xFF));
-      
-      // Message text
-      size_t textLen = fullMessage.length();
-      if (textLen > 140) textLen = 140;  // MeshCore max message length
-      payload.insert(payload.end(), fullMessage.begin(), fullMessage.begin() + textLen);
-      
-      // Send using frame codec
-      if (meshCodec->sendFrame(CMD_SEND_CHANNEL_TXT_MSG, payload)) {
+      if (sendLoRaChannelMessage(fullMessage)) {
         Serial.printf("Retry: MeshCore LoRa notification sent for %s\n", notification.serviceId.c_str());
         notification.meshPending = false;
       } else {
         Serial.printf("MeshCore LoRa send failed for %s: %s\n", 
-                      notification.serviceId.c_str(), meshTransport->getLastError().c_str());
+                      notification.serviceId.c_str(), 
+                      meshTransport != nullptr ? meshTransport->getLastError().c_str() : "transport not initialized");
       }
       
       // Small delay between messages

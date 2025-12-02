@@ -197,32 +197,41 @@ void LoRaTransport::processReceive() {
         return;
     }
     
-    // Check if a packet was received
-    // Note: When using interrupt mode, this would be handled differently
-    // For simplicity, we use polling mode here
+    // Check if a packet was received by attempting to read
+    // In polling mode (no interrupts), readData() returns:
+    // - RADIOLIB_ERR_NONE: packet received successfully
+    // - RADIOLIB_ERR_RX_TIMEOUT: no packet available (normal in polling)
+    // - Other values: actual errors
+    //
+    // Note: For more efficient operation, interrupt mode could be used
+    // with the DIO1 pin to signal packet arrival instead of polling.
     
-    size_t len = m_radio->getPacketLength();
-    if (len == 0 || len > MAX_PACKET_SIZE) {
-        return;
-    }
-    
-    int state = m_radio->readData(m_rxBuffer, len);
+    int state = m_radio->readData(m_rxBuffer, MAX_PACKET_SIZE);
     
     if (state == RADIOLIB_ERR_NONE) {
-        Serial.printf("LoRaTransport RX: %d bytes, RSSI: %.1f dBm, SNR: %.1f dB\n",
-                      (int)len, m_radio->getRSSI(), m_radio->getSNR());
-        
-        // Forward to callback
-        RxCallback callback = m_rxCallback;
-        if (callback) {
-            callback(m_rxBuffer, len);
+        // Get actual packet length after successful read
+        size_t len = m_radio->getPacketLength();
+        if (len > 0 && len <= MAX_PACKET_SIZE) {
+            Serial.printf("LoRaTransport RX: %d bytes, RSSI: %.1f dBm, SNR: %.1f dB\n",
+                          (int)len, m_radio->getRSSI(), m_radio->getSNR());
+            
+            // Forward to callback
+            RxCallback callback = m_rxCallback;
+            if (callback) {
+                callback(m_rxBuffer, len);
+            }
         }
+        
+        // Restart receive mode after successful read
+        startReceive();
     } else if (state != RADIOLIB_ERR_RX_TIMEOUT) {
+        // Actual error occurred (not just timeout)
         Serial.printf("LoRaTransport: read failed: %d\n", state);
+        
+        // Restart receive mode after error
+        startReceive();
     }
-    
-    // Restart receive mode
-    startReceive();
+    // For RADIOLIB_ERR_RX_TIMEOUT, no action needed - still in receive mode
 }
 
 #endif // HAS_LORA_RADIO
