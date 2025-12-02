@@ -12,11 +12,15 @@ Usage:
 """
 
 import os
+import re
 
 Import("env")
 
 # Path to the .env file (relative to project root)
 env_file = os.path.join(env.subst("$PROJECT_DIR"), ".env")
+
+# Valid environment variable key pattern (alphanumeric and underscores)
+KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def parse_env_file(filepath):
@@ -26,7 +30,7 @@ def parse_env_file(filepath):
         return config
 
     with open(filepath, "r") as f:
-        for line in f:
+        for line_num, line in enumerate(f, 1):
             line = line.strip()
             # Skip empty lines and comments
             if not line or line.startswith("#"):
@@ -37,6 +41,9 @@ def parse_env_file(filepath):
                 key = key.strip()
                 value = value.strip()
                 if key:
+                    if not KEY_PATTERN.match(key):
+                        print(f"  Warning: Skipping invalid key '{key}' on line {line_num}")
+                        continue
                     config[key] = value
     return config
 
@@ -56,12 +63,12 @@ def get_build_flag(key, value):
     if value.lower() in ("true", "false"):
         # Boolean value
         return f"-D{macro_name}={value.lower()}"
-    elif value.isdigit() or (value.startswith("-") and value[1:].isdigit()):
-        # Integer value
+    elif value.isdigit() or (len(value) > 1 and value.startswith("-") and value[1:].isdigit()):
+        # Integer value (positive or negative)
         return f"-D{macro_name}={value}"
     else:
         # String value - wrap in escaped quotes
-        # Escape any backslashes and quotes in the value
+        # Escape backslashes and double quotes for the shell
         escaped = value.replace("\\", "\\\\").replace('"', '\\"')
         return f'-D{macro_name}=\\"{escaped}\\"'
 
