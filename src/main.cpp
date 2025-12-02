@@ -1612,6 +1612,12 @@ void checkServices() {
         services[i].isUp ? services[i].consecutivePasses : services[i].consecutiveFails,
         services[i].isUp ? "passes" : "fails");
 
+#ifdef HAS_LCD
+      // Set display update flag BEFORE notifications to ensure display refreshes
+      // even if notification operations take a long time or encounter errors
+      displayNeedsUpdate = true;
+#endif
+
       if (!services[i].isUp) {
         sendOfflineNotification(services[i]);
         services[i].failedChecksSinceAlert = 0;  // Reset counter after initial alert
@@ -1624,10 +1630,6 @@ void checkServices() {
       if (services[i].isUp) {
         services[i].hasBeenUp = true;
       }
-
-#ifdef HAS_LCD
-      displayNeedsUpdate = true;
-#endif
     } else if (!services[i].isUp && !checkResult && services[i].rearmCount > 0) {
       // Service is still DOWN and check failed - handle re-arm logic
       services[i].failedChecksSinceAlert++;
@@ -1640,8 +1642,9 @@ void checkServices() {
     }
 
 #ifdef HAS_LCD
-    // Update display if the currently shown service was checked
-    if (i == currentServiceIndex) {
+    // Update display if viewing detail view for this service, OR if in main view
+    // This ensures the display reflects current service states in both views
+    if (currentView == VIEW_MAIN || i == currentServiceIndex) {
       displayNeedsUpdate = true;
     }
 #endif
