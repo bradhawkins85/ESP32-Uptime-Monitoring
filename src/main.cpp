@@ -1157,7 +1157,13 @@ void initWebServer() {
 
       // Push-specific fields
       if (newService.type == TYPE_PUSH) {
-        newService.pushToken = generatePushToken();
+        // Use provided pushToken if available (for editing), otherwise generate new one
+        String providedToken = doc["pushToken"] | "";
+        if (providedToken.length() > 0) {
+          newService.pushToken = providedToken;
+        } else {
+          newService.pushToken = generatePushToken();
+        }
       } else {
         newService.pushToken = "";
       }
@@ -4158,6 +4164,7 @@ String getWebPage() {
 
     <script>
         let services = [];
+        let editingPushToken = null;  // Preserve pushToken when editing PUSH services
 
         // Update form fields based on service type
         document.getElementById('serviceType').addEventListener('change', function() {
@@ -4258,6 +4265,11 @@ String getWebPage() {
                 snmpExpectedValue: document.getElementById('snmpExpectedValue').value
             };
 
+            // Preserve pushToken when editing a PUSH service
+            if (editingPushToken && data.type === 'push') {
+                data.pushToken = editingPushToken;
+            }
+
             try {
                 const response = await fetch('/api/services', {
                     method: 'POST',
@@ -4268,6 +4280,7 @@ String getWebPage() {
                 if (response.ok) {
                     showAlert('Service added successfully!', 'success');
                     this.reset();
+                    editingPushToken = null;  // Clear the stored pushToken
                     document.getElementById('serviceType').dispatchEvent(new Event('change'));
                     loadServices();
                 } else {
@@ -4491,6 +4504,13 @@ String getWebPage() {
                 return;
             }
 
+            // Preserve pushToken for PUSH services so URL doesn't change
+            if (service.type === 'push' && service.pushToken) {
+                editingPushToken = service.pushToken;
+            } else {
+                editingPushToken = null;
+            }
+
             // Populate form with existing values
             document.getElementById('serviceName').value = service.name;
             document.getElementById('serviceType').value = service.type;
@@ -4525,9 +4545,11 @@ String getWebPage() {
                     loadServices();
                 } else {
                     showAlert('Failed to load service for editing', 'error');
+                    editingPushToken = null;  // Clear on failure
                 }
             } catch (error) {
                 showAlert('Error: ' + error.message, 'error');
+                editingPushToken = null;  // Clear on failure
             }
         }
 
