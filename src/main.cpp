@@ -1500,6 +1500,25 @@ void initWebServer() {
     }
   });
 
+#ifdef HAS_LCD
+  // Wake screen API endpoint - simulates a screen touch to wake the display
+  server.on("/api/screen/wake", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (!ensureAuthenticated(request)) {
+      return;
+    }
+
+    if (!displayReady) {
+      request->send(503, "application/json", "{\"error\":\"Display not ready\"}");
+      return;
+    }
+
+    // Wake the screen as if it was touched
+    turnScreenOn();
+
+    request->send(200, "application/json", "{\"success\":true,\"message\":\"Screen woken\"}");
+  });
+#endif
+
   // Initialize ElegantOTA for firmware updates via web interface
   // Access the update page at /update
   // Use existing web authentication credentials if configured
