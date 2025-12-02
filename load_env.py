@@ -55,6 +55,7 @@ def get_build_flag(key, value):
     - String values are wrapped in escaped quotes
     - Boolean values (true/false) are converted to lowercase
     - Integer values are passed as-is
+    - Floating point values are passed as-is
     """
     # The config.cpp expects *_VALUE macros
     macro_name = f"{key}_VALUE"
@@ -66,12 +67,25 @@ def get_build_flag(key, value):
     elif value.isdigit() or (len(value) > 1 and value.startswith("-") and value[1:].isdigit()):
         # Integer value (positive or negative)
         return f"-D{macro_name}={value}"
+    elif is_float(value):
+        # Floating point value
+        return f"-D{macro_name}={value}"
     else:
         # String value - wrap in escaped quotes
         # Escape backslashes, double quotes, single quotes, and spaces for the shell
         # Double quotes need triple escaping to survive shell -> compiler -> C string
         escaped = value.replace("\\", "\\\\").replace('"', '\\\\\\"').replace("'", "\\'").replace(" ", "\\ ")
         return f'-D{macro_name}=\\"{escaped}\\"'
+
+
+def is_float(value):
+    """Check if a string represents a floating point number."""
+    try:
+        float(value)
+        # Make sure it's not just an integer (those are handled separately)
+        return "." in value or "e" in value.lower()
+    except ValueError:
+        return False
 
 
 # Load configuration from .env file

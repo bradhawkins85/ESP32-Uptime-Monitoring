@@ -24,10 +24,11 @@ It serves as a framework to monitor services where support can be hardcoded as a
 
 The firmware supports multiple ESP32-S3 based boards. Select the appropriate environment when building with PlatformIO:
 
-| Board | Environment | Display | Description | Image |
-|-------|-------------|---------|-------------|-------|
-| ESP32-S3 DevKitC-1 N16R8 | `esp32-n16r8` | None | Standard ESP32-S3 development board with 16MB flash. RGB LED for status indication. | <img width="1157" height="535" alt="image" src="https://github.com/user-attachments/assets/e98f1114-bf9c-4410-9d24-9c2305644fb6" /> |
-| Guition ESP32-4848S040 | `esp32-4848S040` | 480x480 LCD + Touch | ESP32-S3 with 4" square IPS display and GT911 touch controller. Service status is shown on the display. | <img width="1368" height="1186" alt="image" src="https://github.com/user-attachments/assets/b1535a7e-bd36-49af-8da2-77fb3bcfe8c5" /> |
+| Board | Environment | Display | MeshCore Transport | Description |
+|-------|-------------|---------|-------------------|-------------|
+| ESP32-S3 DevKitC-1 N16R8 | `esp32-n16r8` | None | BLE | Standard ESP32-S3 development board with 16MB flash. RGB LED for status indication. Connects to external MeshCore device via BLE. |
+| Guition ESP32-4848S040 | `esp32-4848S040` | 480x480 LCD + Touch | BLE | ESP32-S3 with 4" square IPS display and GT911 touch controller. Service status is shown on the display. |
+| Heltec Wireless Stick Lite V3 | `heltec-wireless-stick-lite-v3` | None | Built-in LoRa | ESP32-S3 with built-in SX1262 LoRa radio. Sends MeshCore messages directly over the radio without needing an external device. |
 
 
 ### Building for a Specific Board
@@ -40,6 +41,9 @@ pio run -e esp32-n16r8
 
 # For Guition ESP32-4848S040 (with LCD and touch)
 pio run -e esp32-4848S040
+
+# For Heltec Wireless Stick Lite V3 (with built-in LoRa radio)
+pio run -e heltec-wireless-stick-lite-v3
 ```
 
 ### LCD Display Features (ESP32-4848S040)
@@ -156,6 +160,8 @@ WEB_AUTH_PASSWORD=strong-password
 
 The firmware now acts as a BLE **client** that connects to the Heltec T114 (MeshCore) using its advertised name and pairing PIN, then writes alert messages to either a MeshCore channel, a Room Server, or both.
 
+**Note:** This section applies to boards without built-in LoRa radio (e.g., `esp32-n16r8`, `esp32-4848S040`). For boards with built-in LoRa (e.g., `heltec-wireless-stick-lite-v3`), see the "Using Built-in LoRa Radio" section below.
+
 1. **Set the MeshCore peer name, PIN, and destinations**
    - Add the following values to your `.env` file so the ESP32 knows how to reach the T114:
      ```bash
@@ -199,6 +205,41 @@ The firmware now acts as a BLE **client** that connects to the Heltec T114 (Mesh
        -d '{"title":"Test","message":"Hello Mesh"}'
      ```
      Replace `<user>`/`<pass>` with your Basic Auth credentials (if enabled) and `<device-ip>` with the ESP32 IP address. The endpoint returns an error if the T114 cannot be found or paired.
+
+### Using Built-in LoRa Radio (Heltec Wireless Stick Lite V3)
+
+For the Heltec Wireless Stick Lite V3, the firmware uses the built-in SX1262 LoRa radio to send MeshCore messages directly without needing an external MeshCore device or BLE connection.
+
+**Benefits of built-in LoRa:**
+- No external MeshCore device required
+- WiFi and LoRa can operate simultaneously (no coexistence issues like BLE+WiFi)
+- Simpler setup - just configure radio parameters to match your mesh network
+- Lower latency for notifications
+
+1. **Configure LoRa radio parameters**
+   - Add the following values to your `.env` file to match your MeshCore network settings:
+     ```bash
+     # LoRa radio configuration (must match your MeshCore network)
+     LORA_FREQUENCY=915.0           # MHz (915.0 for US, 868.0 for EU)
+     LORA_BANDWIDTH=250.0           # kHz (MeshCore default: 250.0)
+     LORA_SPREADING_FACTOR=10       # 7-12 (MeshCore default: 10)
+     LORA_CODING_RATE=5             # 5-8 for 4/5 to 4/8 (default: 5)
+     LORA_SYNC_WORD=18              # MeshCore sync word (0x12 = 18 decimal)
+     LORA_TX_POWER=22               # dBm, max 22 for SX1262
+     
+     # Channel name for message addressing (still used in packet format)
+     BLE_MESH_CHANNEL_NAME=Alerts
+     ```
+
+2. **Build for the Heltec board**
+   ```bash
+   pio run -e heltec-wireless-stick-lite-v3 --target upload
+   ```
+
+3. **Messages are sent directly over LoRa**
+   - When a service goes down/up, the notification is broadcast directly on the configured LoRa frequency
+   - Other MeshCore nodes in range will receive the message
+   - The web API `/api/mesh/send` works the same way but sends over LoRa instead of BLE
 
 ### Enabling ntfy notifications
 

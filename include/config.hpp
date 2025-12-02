@@ -10,13 +10,22 @@ extern const char* WIFI_PASSWORD;
 extern const char* WEB_AUTH_USERNAME;
 extern const char* WEB_AUTH_PASSWORD;
 
-// BLE configuration
+// BLE configuration (for boards without built-in LoRa radio)
 extern const char* BLE_DEVICE_NAME;
 extern const char* BLE_PEER_NAME;
 extern const uint32_t BLE_PAIRING_PIN;
 extern const char* BLE_MESH_CHANNEL_NAME;
 extern const char* BLE_MESH_ROOM_SERVER_ID;
 extern const char* BLE_MESH_ROOM_SERVER_PASSWORD;
+
+// LoRa radio configuration (for boards with built-in SX1262 radio)
+// These are used when HAS_LORA_RADIO is defined (e.g., Heltec Wireless Stick Lite V3)
+extern const float LORA_FREQUENCY;          // MHz (default: 915.0 for US915)
+extern const float LORA_BANDWIDTH;          // kHz (default: 250.0)
+extern const uint8_t LORA_SPREADING_FACTOR; // 7-12 (default: 10)
+extern const uint8_t LORA_CODING_RATE;      // 5-8 for 4/5 to 4/8 (default: 5)
+extern const uint8_t LORA_SYNC_WORD;        // Sync word (default: 0x12 for MeshCore)
+extern const int8_t LORA_TX_POWER;          // dBm (default: 22)
 
 // ntfy configuration
 extern const char* NTFY_SERVER;

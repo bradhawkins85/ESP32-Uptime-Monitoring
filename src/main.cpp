@@ -382,9 +382,14 @@ bool isSmtpConfigured() {
 }
 
 bool isMeshCoreConfigured() {
-  // MeshCore is configured if peer name is set AND (channel OR room server is set)
+#ifdef HAS_LORA_RADIO
+  // For LoRa mode, MeshCore is configured if channel name is set
+  return strlen(BLE_MESH_CHANNEL_NAME) > 0;
+#else
+  // For BLE mode, MeshCore is configured if peer name is set AND (channel OR room server is set)
   return strlen(BLE_PEER_NAME) > 0 && 
          (strlen(BLE_MESH_CHANNEL_NAME) > 0 || strlen(BLE_MESH_ROOM_SERVER_ID) > 0);
+#endif
 }
 
 bool isMeshChannelConfigured() {
@@ -407,16 +412,122 @@ void reconnectWiFi();
 AsyncWebServer server(80);
 
 // MeshCore Protocol Stack (layered architecture)
+// The transport layer varies based on hardware:
+// - BLE mode (default): BLECentralTransport connects to external MeshCore device
+// - LoRa mode (HAS_LORA_RADIO): LoRaTransport uses built-in SX1262 radio
+#ifdef HAS_LORA_RADIO
+static LoRaTransport* meshTransport = nullptr;
+static FrameCodec* meshCodec = nullptr;
+// In LoRa mode, messages are sent directly - no companion protocol needed
+// The LoRa radio is always "connected" once initialized
+#else
 // Layer 1: BLE Transport - handles BLE connection and I/O
 // Layer 2: Frame Codec - handles frame parsing/building  
 // Layer 3: Companion Protocol - handles MeshCore protocol logic
 static BLECentralTransport* meshTransport = nullptr;
 static FrameCodec* meshCodec = nullptr;
 static CompanionProtocol* meshProtocol = nullptr;
+#endif
 
 // BLE/WiFi coexistence - ESP32-S3 cannot run WiFi and BLE simultaneously
+// This is not needed for LoRa mode since LoRa and WiFi can coexist
 bool bleOperationInProgress = false;
 bool monitoringPaused = false;
+
+// MeshCore protocol constants for LoRa mode
+// These match the CompanionProtocol constants used in BLE mode
+#ifdef HAS_LORA_RADIO
+static constexpr uint8_t LORA_CMD_SEND_CHANNEL_TXT_MSG = 3;
+static constexpr uint8_t LORA_TXT_TYPE_PLAIN = 0;
+static constexpr uint8_t LORA_DEFAULT_CHANNEL_INDEX = 0;  // Default channel for broadcast
+static constexpr size_t LORA_MAX_TEXT_MESSAGE_LEN = 140;
+
+/**
+ * Ensure LoRa transport is initialized
+ * Creates the transport and codec if not already created
+ * @return true if transport is ready to use
+ */
+bool ensureLoRaTransportInitialized() {
+  if (meshTransport != nullptr && meshTransport->isInitialized()) {
+    return true;
+  }
+  
+  // Clean up any partial state
+  if (meshCodec != nullptr) {
+    delete meshCodec;
+    meshCodec = nullptr;
+  }
+  if (meshTransport != nullptr) {
+    delete meshTransport;
+    meshTransport = nullptr;
+  }
+  
+  // Create and initialize transport
+  LoRaTransport::Config config;
+  config.pinNss = LORA_NSS;
+  config.pinDio1 = LORA_DIO1;
+  config.pinRst = LORA_RST;
+  config.pinBusy = LORA_BUSY;
+  config.pinMosi = LORA_MOSI;
+  config.pinMiso = LORA_MISO;
+  config.pinSck = LORA_SCK;
+  config.frequency = LORA_FREQUENCY;
+  config.bandwidth = LORA_BANDWIDTH;
+  config.spreadingFactor = LORA_SPREADING_FACTOR;
+  config.codingRate = LORA_CODING_RATE;
+  config.syncWord = LORA_SYNC_WORD;
+  config.txPower = LORA_TX_POWER;
+  
+  meshTransport = new LoRaTransport(config);
+  meshCodec = new FrameCodec(*meshTransport);
+  
+  if (!meshTransport->init()) {
+    Serial.println("ERROR: LoRa radio initialization failed");
+    delete meshCodec;
+    meshCodec = nullptr;
+    delete meshTransport;
+    meshTransport = nullptr;
+    return false;
+  }
+  
+  return true;
+}
+
+/**
+ * Build and send a MeshCore channel message via LoRa
+ * @param message Message text to send
+ * @return true if message was sent successfully
+ */
+bool sendLoRaChannelMessage(const String& message) {
+  if (!ensureLoRaTransportInitialized()) {
+    return false;
+  }
+  
+  // Build MeshCore packet for channel message
+  std::vector<uint8_t> payload;
+  
+  payload.push_back(LORA_TXT_TYPE_PLAIN);
+  payload.push_back(LORA_DEFAULT_CHANNEL_INDEX);
+  
+  // Timestamp (little-endian, 4 bytes)
+  time_t now = time(nullptr);
+  uint32_t timestamp = static_cast<uint32_t>(now);
+  payload.push_back(static_cast<uint8_t>(timestamp & 0xFF));
+  payload.push_back(static_cast<uint8_t>((timestamp >> 8) & 0xFF));
+  payload.push_back(static_cast<uint8_t>((timestamp >> 16) & 0xFF));
+  payload.push_back(static_cast<uint8_t>((timestamp >> 24) & 0xFF));
+  
+  // Message text (truncate if too long)
+  size_t textLen = message.length();
+  if (textLen > LORA_MAX_TEXT_MESSAGE_LEN) {
+    textLen = LORA_MAX_TEXT_MESSAGE_LEN;
+  }
+  payload.insert(payload.end(), message.begin(), message.begin() + textLen);
+  
+  // Send using frame codec
+  return meshCodec->sendFrame(LORA_CMD_SEND_CHANNEL_TXT_MSG, payload);
+}
+#endif
 
 // Minimum valid Unix timestamp for NTP validation (2021-01-01 00:00:00 UTC)
 // Used to detect if time has been properly synchronized via NTP
@@ -435,10 +546,21 @@ bool isMeshDeviceConnected() {
 }
 
 bool isMeshChannelReady() {
+#ifdef HAS_LORA_RADIO
+  // For LoRa mode, channel is ready when transport is initialized
+  return meshTransport != nullptr && meshTransport->isInitialized();
+#else
   return meshProtocol != nullptr && meshProtocol->isChannelReady();
+#endif
 }
 
 String getMeshLastError() {
+#ifdef HAS_LORA_RADIO
+  if (meshTransport != nullptr) {
+    return meshTransport->getLastError();
+  }
+  return "";
+#else
   if (meshProtocol != nullptr) {
     return meshProtocol->getLastError();
   }
@@ -446,13 +568,19 @@ String getMeshLastError() {
     return meshTransport->getLastError();
   }
   return "";
+#endif
 }
 
 int getMeshProtocolState() {
+#ifdef HAS_LORA_RADIO
+  // For LoRa mode, return 3 (SessionReady equivalent) if initialized
+  return (meshTransport != nullptr && meshTransport->isInitialized()) ? 3 : 0;
+#else
   if (meshProtocol != nullptr) {
     return static_cast<int>(meshProtocol->getState());
   }
   return 0;
+#endif
 }
 
 // Service types
@@ -831,6 +959,36 @@ void initMeshCore() {
   Serial.println("Initializing MeshCore protocol stack...");
   Serial.printf("Free heap before init: %d bytes\n", ESP.getFreeHeap());
   
+#ifdef HAS_LORA_RADIO
+  // LoRa mode: Use built-in SX1262 radio
+  LoRaTransport::Config config;
+  config.pinNss = LORA_NSS;
+  config.pinDio1 = LORA_DIO1;
+  config.pinRst = LORA_RST;
+  config.pinBusy = LORA_BUSY;
+  config.pinMosi = LORA_MOSI;
+  config.pinMiso = LORA_MISO;
+  config.pinSck = LORA_SCK;
+  config.frequency = LORA_FREQUENCY;
+  config.bandwidth = LORA_BANDWIDTH;
+  config.spreadingFactor = LORA_SPREADING_FACTOR;
+  config.codingRate = LORA_CODING_RATE;
+  config.syncWord = LORA_SYNC_WORD;
+  config.txPower = LORA_TX_POWER;
+  
+  meshTransport = new LoRaTransport(config);
+  meshCodec = new FrameCodec(*meshTransport);
+  
+  // Initialize the LoRa radio
+  if (!meshTransport->init()) {
+    Serial.println("ERROR: LoRa radio initialization failed");
+    disconnectMeshCore();
+    return;
+  }
+  
+  Serial.println("MeshCore LoRa radio ready");
+#else
+  // BLE mode: Connect to external MeshCore device
   // Create the layered protocol stack
   BLECentralTransport::Config config;
   config.deviceName = BLE_DEVICE_NAME;
@@ -870,6 +1028,7 @@ void initMeshCore() {
   }
   
   Serial.printf("MeshCore ready on channel %d\n", channelIdx);
+#endif
 }
 
 bool ensureAuthenticated(AsyncWebServerRequest* request) {
@@ -931,12 +1090,27 @@ void initFileSystem() {
 
 void disconnectMeshCore() {
   // Clear callbacks before cleanup to prevent use-after-free.
-  // BLE callbacks could fire during disconnect/deinit and would reference deleted objects.
+  // Callbacks could fire during disconnect/deinit and would reference deleted objects.
   if (meshCodec != nullptr) {
     meshCodec->clearCallbacks();
   }
   
-  // Clean up the layered protocol stack
+#ifdef HAS_LORA_RADIO
+  // LoRa mode: Deinitialize the radio
+  if (meshCodec != nullptr) {
+    delete meshCodec;
+    meshCodec = nullptr;
+  }
+  
+  if (meshTransport != nullptr) {
+    meshTransport->deinit();
+    delete meshTransport;
+    meshTransport = nullptr;
+  }
+  
+  Serial.println("MeshCore LoRa radio deinitialized");
+#else
+  // BLE mode: Clean up the layered protocol stack
   if (meshProtocol != nullptr) {
     delete meshProtocol;
     meshProtocol = nullptr;
@@ -955,6 +1129,7 @@ void disconnectMeshCore() {
   }
   
   Serial.println("MeshCore disconnected and deinitialized");
+#endif
 }
 
 void disconnectWiFi() {
@@ -2237,7 +2412,28 @@ void sendDiscordNotification(const String& title, const String& message) {
 }
 
 void sendMeshCoreNotification(const String& title, const String& message) {
-  // ESP32-S3 cannot run WiFi and BLE simultaneously
+#ifdef HAS_LORA_RADIO
+  // LoRa mode: Send directly using the built-in radio
+  // No WiFi/radio coexistence issues - both can run simultaneously
+  
+  Serial.println("Starting MeshCore notification (LoRa)...");
+  
+  // Build the message: combine title and message
+  String fullMessage = title + ": " + message;
+  
+  // Send using helper function
+  if (sendLoRaChannelMessage(fullMessage)) {
+    Serial.println("MeshCore LoRa notification sent successfully");
+  } else {
+    if (meshTransport != nullptr) {
+      Serial.printf("MeshCore LoRa notification failed: %s\n", meshTransport->getLastError().c_str());
+    } else {
+      Serial.println("MeshCore LoRa notification failed: transport not initialized");
+    }
+  }
+  
+#else
+  // BLE mode: ESP32-S3 cannot run WiFi and BLE simultaneously
   // Disconnect WiFi, connect BLE, send message, disconnect BLE, reconnect WiFi
   
   Serial.println("Starting MeshCore notification (BLE operation)...");
@@ -2315,6 +2511,7 @@ void sendMeshCoreNotification(const String& title, const String& message) {
   monitoringPaused = false;
   
   Serial.println("MeshCore notification operation complete");
+#endif
 }
 
 String base64Encode(const String& input) {
@@ -2586,7 +2783,34 @@ bool sendSmtpNotificationWithStatus(const String& title, const String& message) 
 }
 
 bool sendMeshCoreNotificationWithStatus(const String& title, const String& message) {
-  // ESP32-S3 cannot run WiFi and BLE simultaneously
+#ifdef HAS_LORA_RADIO
+  // LoRa mode: Send directly using the built-in radio
+  // No WiFi/radio coexistence issues - both can run simultaneously
+  
+  Serial.println("Starting MeshCore notification (LoRa)...");
+  
+  // Set LED to white to indicate MeshCore communication
+  setLedStatus(LED_STATUS_MESHCORE);
+  
+  // Build the message: combine title and message
+  String fullMessage = title + ": " + message;
+  
+  // Send using helper function
+  bool success = sendLoRaChannelMessage(fullMessage);
+  if (success) {
+    Serial.println("MeshCore LoRa notification sent successfully");
+  } else {
+    if (meshTransport != nullptr) {
+      Serial.printf("MeshCore LoRa notification failed: %s\n", meshTransport->getLastError().c_str());
+    } else {
+      Serial.println("MeshCore LoRa notification failed: transport not initialized");
+    }
+  }
+  
+  return success;
+  
+#else
+  // BLE mode: ESP32-S3 cannot run WiFi and BLE simultaneously
   // Disconnect WiFi, connect BLE, send message, disconnect BLE, reconnect WiFi
   
   Serial.println("Starting MeshCore notification (BLE operation)...");
@@ -2684,6 +2908,7 @@ bool sendMeshCoreNotificationWithStatus(const String& title, const String& messa
   
   Serial.println("MeshCore notification operation complete");
   return success;
+#endif
 }
 
 // Notification queue helper functions
@@ -2830,6 +3055,46 @@ void processMeshCoreQueue() {
     return;
   }
   
+#ifdef HAS_LORA_RADIO
+  // LoRa mode: Send notifications directly via the built-in radio
+  // No WiFi/radio coexistence issues - both can run simultaneously
+  
+  Serial.println("Processing MeshCore queue (LoRa)...");
+  
+  // Set LED to white to indicate MeshCore communication
+  setLedStatus(LED_STATUS_MESHCORE);
+  lastMeshCoreRetry = currentTime;
+  
+  // Ensure transport is initialized
+  if (!ensureLoRaTransportInitialized()) {
+    Serial.println("ERROR: LoRa radio initialization failed");
+    return;
+  }
+  
+  // Send all pending MeshCore notifications using helper function
+  for (int i = 0; i < queuedNotificationCount; i++) {
+    QueuedNotification& notification = notificationQueue[i];
+    if (notification.meshPending) {
+      String fullMessage = notification.title + ": " + notification.message;
+      
+      if (sendLoRaChannelMessage(fullMessage)) {
+        Serial.printf("Retry: MeshCore LoRa notification sent for %s\n", notification.serviceId.c_str());
+        notification.meshPending = false;
+      } else {
+        Serial.printf("MeshCore LoRa send failed for %s: %s\n", 
+                      notification.serviceId.c_str(), 
+                      meshTransport != nullptr ? meshTransport->getLastError().c_str() : "transport not initialized");
+      }
+      
+      // Small delay between messages
+      delay(100);
+    }
+  }
+  
+  Serial.println("MeshCore LoRa batch operation complete");
+  
+#else
+  // BLE mode: Need to batch operations due to WiFi/BLE coexistence
   Serial.println("Processing MeshCore queue (batched BLE operation)...");
   
   // Set LED to white to indicate MeshCore communication
@@ -2949,6 +3214,7 @@ void processMeshCoreQueue() {
   monitoringPaused = false;
   
   Serial.println("MeshCore batch operation complete");
+#endif
   
   // Clean up any notifications that have all channels sent
   for (int i = 0; i < queuedNotificationCount; i++) {
