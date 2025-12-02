@@ -1493,7 +1493,34 @@ void initWebServer() {
     bool found = false;
     for (int i = 0; i < serviceCount; i++) {
       if (services[i].type == TYPE_PUSH && services[i].pushToken == token) {
-        services[i].lastPush = millis();
+        unsigned long now = millis();
+        services[i].lastPush = now;
+        bool wasUp = services[i].isUp;
+
+        // Mark the service as passing immediately
+        services[i].lastCheck = now;
+        services[i].lastUptime = now;
+        services[i].secondsSinceLastCheck = 0;
+        services[i].consecutiveFails = 0;
+        services[i].failedChecksSinceAlert = 0;
+        services[i].lastError = "";
+
+        int requiredPasses = services[i].passThreshold >= 1 ? services[i].passThreshold : 1;
+        services[i].consecutivePasses = requiredPasses;
+        services[i].isUp = true;
+
+        if (!wasUp) {
+          Serial.printf("Push service '%s' marked UP immediately\n", services[i].name.c_str());
+
+#ifdef HAS_LCD
+          displayNeedsUpdate = true;
+#endif
+
+          if (services[i].hasBeenUp) {
+            sendOnlineNotification(services[i]);
+          }
+          services[i].hasBeenUp = true;
+        }
         found = true;
         Serial.printf("Push received for service '%s'\n", services[i].name.c_str());
         
