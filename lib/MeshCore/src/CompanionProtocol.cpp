@@ -95,7 +95,9 @@ void CompanionProtocol::onDisconnected() {
 }
 
 void CompanionProtocol::onFrame(uint8_t cmd, const uint8_t* payload, size_t payloadLen) {
-    Serial.printf("CompanionProtocol: received frame cmd=0x%02X, len=%d\n", cmd, (int)payloadLen);
+    // NOTE: This callback runs in BLE task context with limited stack (~3-4KB).
+    // Avoid Serial.printf and other stack-heavy operations to prevent overflow.
+    // If logging is needed, use simple Serial.print/println sparingly.
     
     // Check if this looks like continuation data for a fragmented response.
     // MeshCore response codes are in the low range (0x00-MAX_KNOWN_RESPONSE_CODE).
@@ -122,12 +124,6 @@ void CompanionProtocol::onFrame(uint8_t cmd, const uint8_t* payload, size_t payl
                 memcpy(m_capturedBuffer + m_capturedBufferLen + 1, payload, payloadLen);
             }
             m_capturedBufferLen = newTotalLen;
-            Serial.printf("CompanionProtocol: appended continuation data, total %u bytes\n", 
-                          (unsigned int)m_capturedBufferLen);
-        } else {
-            Serial.printf("CompanionProtocol: continuation would overflow buffer (%u + %u > %u)\n",
-                          (unsigned int)m_capturedBufferLen, (unsigned int)totalNewData, 
-                          (unsigned int)sizeof(m_capturedBuffer));
         }
         // Don't overwrite m_lastResponseCode or m_rxBuffer for continuation data
         return;
@@ -143,8 +139,6 @@ void CompanionProtocol::onFrame(uint8_t cmd, const uint8_t* payload, size_t payl
         }
         m_rxPayloadLen = payloadLen + 1;  // Include command byte
     } else {
-        Serial.printf("CompanionProtocol: payload too large (%d > %d)\n", 
-                      (int)payloadLen, (int)(MAX_RX_BUFFER_SIZE - 1));
         m_rxPayloadLen = 0;
     }
     
@@ -164,16 +158,10 @@ void CompanionProtocol::onFrame(uint8_t cmd, const uint8_t* payload, size_t payl
                 memcpy(m_capturedBuffer, m_rxBuffer, m_rxPayloadLen);
             }
             m_expectedResponseCaptured = true;
-            Serial.printf("CompanionProtocol: captured expected response 0x%02X\n", cmd);
         }
     }
     
     m_responseReceived = true;
-    
-    // Handle push messages (unsolicited)
-    if (cmd == PUSH_CODE_MSG_WAITING || cmd == PUSH_CODE_SEND_CONFIRMED) {
-        Serial.printf("CompanionProtocol: received push code 0x%02X\n", cmd);
-    }
 }
 
 void CompanionProtocol::setStateCallback(StateCallback callback) {
