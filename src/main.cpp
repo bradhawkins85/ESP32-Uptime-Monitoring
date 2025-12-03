@@ -761,6 +761,7 @@ void saveHistory();
 void loadHistory();
 int getHistoryIndex(const String& serviceId);
 void finalizeCurrentHour(int historyIndex);
+void removeServiceHistory(const String& serviceId);
 
 // Notification sending functions that return success status
 bool sendNtfyNotificationWithStatus(const String& title, const String& message, const String& tags);
@@ -1553,6 +1554,9 @@ void initWebServer() {
       services[i] = services[i + 1];
     }
     serviceCount--;
+
+    // Remove history for the deleted service
+    removeServiceHistory(serviceId);
 
     saveServices();
     request->send(200, "application/json", "{\"success\":true}");
@@ -3765,6 +3769,27 @@ void loadHistory() {
   }
   
   Serial.printf("Loaded history for %d services\n", historyCount);
+}
+
+// Remove history for a specific service (when service is deleted)
+void removeServiceHistory(const String& serviceId) {
+  int historyIndex = getHistoryIndex(serviceId);
+  if (historyIndex == -1) {
+    return;  // History not found, nothing to remove
+  }
+  
+  // Clear the history data
+  serviceHistories[historyIndex].serviceId = "";
+  serviceHistories[historyIndex].hourlyUptime.clear();
+  serviceHistories[historyIndex].firstHourTimestamp = 0;
+  serviceHistories[historyIndex].checksThisHour = 0;
+  serviceHistories[historyIndex].passesThisHour = 0;
+  serviceHistories[historyIndex].currentHourStart = 0;
+  
+  Serial.printf("Removed history for service: %s\n", serviceId.c_str());
+  
+  // Save the updated history to disk
+  saveHistory();
 }
 
 String getServiceTypeString(ServiceType type) {
