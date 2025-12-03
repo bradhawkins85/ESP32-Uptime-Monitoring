@@ -2652,8 +2652,6 @@ void sendBootNotification() {
   String message = "Device has booted and is now monitoring services.";
   message += " IP: " + WiFi.localIP().toString();
 
-  bool meshQueued = false;
-
   if (isNtfyConfigured()) {
     sendNtfyNotification(title, message, "rocket,monitor");
   }
@@ -2670,20 +2668,17 @@ void sendBootNotification() {
 #ifdef HAS_LORA_RADIO
     // LoRa mode: Send directly - no WiFi/BLE coexistence issues
     sendMeshCoreNotification(title, message);
+    Serial.println("Boot notification sent");
 #else
-    // BLE mode: Queue the notification to be sent after setup() completes
+    // BLE mode: Queue the notification to be sent after setup() completes.
     // This prevents watchdog timeouts during boot by deferring the BLE operation
-    // to the main loop where it can be handled safely without blocking setup()
+    // to the main loop where it can be handled safely without blocking setup().
     Serial.println("MeshCore boot notification queued (BLE mode)");
     pendingMeshTitle = title;
     pendingMeshMessage = message;
     pendingMeshNotification = true;
-    meshQueued = true;
-#endif
-  }
-
-  if (meshQueued) {
     Serial.println("Boot notification sent/queued");
+#endif
   } else {
     Serial.println("Boot notification sent");
   }
