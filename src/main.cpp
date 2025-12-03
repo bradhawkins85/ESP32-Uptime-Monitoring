@@ -664,7 +664,8 @@ ServiceHistory serviceHistories[MAX_SERVICES];
 
 // Historical data constants
 const int MAX_HISTORY_HOURS = 720;  // 30 days of hourly data per service (720 bytes/service)
-const int MAX_TOTAL_HISTORY_BYTES = 1048576;  // 1MB total limit
+const int DISPLAY_HISTORY_HOURS = 90;  // Show last 90 hours (~4 days) in UI for readability
+const int MAX_MISSED_HOURS_TO_FILL = 24;  // Maximum gap to backfill with 0% uptime
 
 // Filesystem readiness flag to avoid LittleFS access before mount
 static bool littleFsReady = false;
@@ -3603,8 +3604,9 @@ void finalizeCurrentHour(int historyIndex) {
   if (serviceHistories[historyIndex].checksThisHour == 0) return;
   
   // Calculate uptime percentage for this hour (0-100)
-  uint8_t uptimePercent = (serviceHistories[historyIndex].passesThisHour * 100) / 
-                          serviceHistories[historyIndex].checksThisHour;
+  // Use floating-point math and rounding for accurate percentages
+  uint8_t uptimePercent = (uint8_t)((serviceHistories[historyIndex].passesThisHour * 100.0f) / 
+                          serviceHistories[historyIndex].checksThisHour + 0.5f);
   
   // Add to history
   serviceHistories[historyIndex].hourlyUptime.push_back(uptimePercent);
@@ -3650,8 +3652,9 @@ void recordCheckResult(const String& serviceId, bool isUp) {
     finalizeCurrentHour(historyIndex);
     
     // Handle any skipped hours (if checks were paused or system was down)
+    // Cap at MAX_MISSED_HOURS_TO_FILL to prevent excessive backfill
     unsigned long missedHours = (currentHour - serviceHistories[historyIndex].currentHourStart) / 3600 - 1;
-    for (unsigned long i = 0; i < missedHours && i < 24; i++) {  // Cap at 24 hours
+    for (unsigned long i = 0; i < missedHours && i < MAX_MISSED_HOURS_TO_FILL; i++) {
       // Add 0% uptime for missed hours
       serviceHistories[historyIndex].hourlyUptime.push_back(0);
       if (serviceHistories[historyIndex].hourlyUptime.size() > MAX_HISTORY_HOURS) {
@@ -4557,8 +4560,10 @@ String getWebPage() {
                 return '<div class="history-container"><span class="uptime-percentage">N/A</span></div>';
             }
             
-            // Take last 90 hours (about 4 days) for display
-            const recentHistory = history.hourlyUptime.slice(-90);
+            // Display last 90 hours (about 4 days) for readability
+            // Full 30 days of data is stored but truncated for display
+            const DISPLAY_HOURS = 90;
+            const recentHistory = history.hourlyUptime.slice(-DISPLAY_HOURS);
             const uptimePercent = history.uptimePercentage.toFixed(1);
             
             const bars = recentHistory.map(uptime => {
