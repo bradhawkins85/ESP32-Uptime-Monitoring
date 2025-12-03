@@ -1967,15 +1967,23 @@ bool checkHttpGet(Service& service) {
   
   // Handle HTTPS URLs by using WiFiClientSecure
   bool isSecure = url.startsWith("https://");
-  
+  WiFiClient* client = nullptr;
+  WiFiClient plainClient;
+  WiFiClientSecure secureClient;
+
   if (isSecure) {
-    WiFiClientSecure secureClient;
-    secureClient.setInsecure();  // Skip certificate validation
-    http.begin(secureClient, url);
+    secureClient.setInsecure();  // Skip certificate validation for HTTPS targets
+    client = &secureClient;
   } else {
-    http.begin(url);
+    client = &plainClient;
   }
-  
+
+  // Ensure the underlying client stays in scope for the full request lifecycle
+  if (!http.begin(*client, url)) {
+    service.lastError = "Invalid URL";
+    return false;
+  }
+
   http.setTimeout(5000);
 
   int httpCode = http.GET();
