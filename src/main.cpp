@@ -15,6 +15,7 @@
 #include <time.h>
 #include <esp_random.h>
 #include <ElegantOTA.h>
+#include <vector>
 
 // MeshCore layered protocol implementation
 #include "MeshCore.hpp"
@@ -641,10 +642,29 @@ struct Service {
   unsigned long pauseUntil; // Timestamp (millis) until which checks are paused (0 = not paused)
 };
 
+// Historical data structure for uptime tracking
+// Stores hourly uptime percentage to minimize storage (1 byte per hour)
+// With 1MB limit and 20 services, we can store ~52,000 hours (~6 years) per service
+struct ServiceHistory {
+  String serviceId;
+  std::vector<uint8_t> hourlyUptime;  // Each byte is uptime % for that hour (0-100)
+  unsigned long firstHourTimestamp;    // Unix timestamp of first hour in history
+  int checksThisHour;                  // Number of checks performed this hour
+  int passesThisHour;                  // Number of successful checks this hour
+  unsigned long currentHourStart;      // Timestamp (seconds) of current hour being tracked
+};
+
 // Store up to 20 services
 const int MAX_SERVICES = 20;
 Service services[MAX_SERVICES];
 int serviceCount = 0;
+
+// Historical data for all services
+ServiceHistory serviceHistories[MAX_SERVICES];
+
+// Historical data constants
+const int MAX_HISTORY_HOURS = 720;  // 30 days of hourly data per service (720 bytes/service)
+const int MAX_TOTAL_HISTORY_BYTES = 1048576;  // 1MB total limit
 
 // Filesystem readiness flag to avoid LittleFS access before mount
 static bool littleFsReady = false;
@@ -734,6 +754,14 @@ bool readSmtpResponse(WiFiClient& client, int expectedCode);
 bool sendSmtpCommand(WiFiClient& client, const String& command, int expectedCode);
 void sendBootNotification();
 
+// Historical data functions
+void initServiceHistory(const String& serviceId);
+void recordCheckResult(const String& serviceId, bool isUp);
+void saveHistory();
+void loadHistory();
+int getHistoryIndex(const String& serviceId);
+void finalizeCurrentHour(int historyIndex);
+
 // Notification sending functions that return success status
 bool sendNtfyNotificationWithStatus(const String& title, const String& message, const String& tags);
 bool sendDiscordNotificationWithStatus(const String& title, const String& message);
@@ -772,6 +800,9 @@ void setup() {
 
   // Load saved services
   loadServices();
+
+  // Load historical data
+  loadHistory();
 
   // Initialize web server
   initWebServer();
@@ -892,6 +923,13 @@ void loop() {
     if (serviceCount > 0) {
       hasPerformedChecks = true;
     }
+  }
+
+  // Save history periodically (every 5 minutes)
+  static unsigned long lastHistorySave = 0;
+  if (currentTime - lastHistorySave >= 300000) {  // 5 minutes
+    saveHistory();
+    lastHistorySave = currentTime;
   }
 
   // Process notification queue for failed notifications (WiFi-based)
@@ -1857,6 +1895,55 @@ void initWebServer() {
   });
 #endif
 
+  // Get historical data for a specific service
+  server.on("/api/history/*", HTTP_GET, [](AsyncWebServerRequest *request) {
+    String path = request->url();
+    String serviceId = path.substring(path.lastIndexOf('/') + 1);
+    
+    if (serviceId.length() == 0) {
+      request->send(400, "application/json", "{\"error\":\"Missing service ID\"}");
+      return;
+    }
+    
+    // Find the history for this service
+    int historyIndex = getHistoryIndex(serviceId);
+    if (historyIndex == -1) {
+      request->send(404, "application/json", "{\"error\":\"Service history not found\"}");
+      return;
+    }
+    
+    JsonDocument doc;
+    doc["serviceId"] = serviceHistories[historyIndex].serviceId;
+    doc["firstHourTimestamp"] = (unsigned long)serviceHistories[historyIndex].firstHourTimestamp;
+    doc["currentHourStart"] = (unsigned long)serviceHistories[historyIndex].currentHourStart;
+    
+    // Calculate overall uptime percentage
+    int totalHours = serviceHistories[historyIndex].hourlyUptime.size();
+    if (totalHours > 0) {
+      unsigned long totalUptime = 0;
+      for (uint8_t uptime : serviceHistories[historyIndex].hourlyUptime) {
+        totalUptime += uptime;
+      }
+      doc["uptimePercentage"] = (float)totalUptime / (float)totalHours;
+    } else {
+      doc["uptimePercentage"] = 0;
+    }
+    
+    // Include current hour stats
+    doc["checksThisHour"] = serviceHistories[historyIndex].checksThisHour;
+    doc["passesThisHour"] = serviceHistories[historyIndex].passesThisHour;
+    
+    // Add hourly uptime data
+    JsonArray uptimeArray = doc["hourlyUptime"].to<JsonArray>();
+    for (uint8_t uptime : serviceHistories[historyIndex].hourlyUptime) {
+      uptimeArray.add(uptime);
+    }
+    
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+  });
+
   // Initialize ElegantOTA for firmware updates via web interface
   // Access the update page at /update
   // Use existing web authentication credentials if configured
@@ -1946,6 +2033,9 @@ void checkServices() {
         checkResult = checkPush(services[i]);
         break;
     }
+
+    // Record check result in history
+    recordCheckResult(services[i].id, checkResult);
 
     // Update consecutive counters based on check result
     if (checkResult) {
@@ -3465,6 +3555,218 @@ void loadServices() {
   Serial.printf("Loaded %d services\n", serviceCount);
 }
 
+// ---- Historical Data Functions ----
+
+// Get history array index for a given service ID
+int getHistoryIndex(const String& serviceId) {
+  for (int i = 0; i < MAX_SERVICES; i++) {
+    if (serviceHistories[i].serviceId == serviceId) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+// Initialize history tracking for a new service
+void initServiceHistory(const String& serviceId) {
+  // Find empty slot
+  int index = -1;
+  for (int i = 0; i < MAX_SERVICES; i++) {
+    if (serviceHistories[i].serviceId.length() == 0) {
+      index = i;
+      break;
+    }
+  }
+  
+  if (index == -1) {
+    Serial.println("ERROR: No space for service history");
+    return;
+  }
+  
+  serviceHistories[index].serviceId = serviceId;
+  serviceHistories[index].hourlyUptime.clear();
+  serviceHistories[index].firstHourTimestamp = 0;
+  serviceHistories[index].checksThisHour = 0;
+  serviceHistories[index].passesThisHour = 0;
+  serviceHistories[index].currentHourStart = 0;
+  
+  Serial.printf("Initialized history for service: %s\n", serviceId.c_str());
+}
+
+// Finalize the current hour by calculating uptime percentage and storing it
+void finalizeCurrentHour(int historyIndex) {
+  if (historyIndex < 0 || historyIndex >= MAX_SERVICES) return;
+  if (serviceHistories[historyIndex].checksThisHour == 0) return;
+  
+  // Calculate uptime percentage for this hour (0-100)
+  uint8_t uptimePercent = (serviceHistories[historyIndex].passesThisHour * 100) / 
+                          serviceHistories[historyIndex].checksThisHour;
+  
+  // Add to history
+  serviceHistories[historyIndex].hourlyUptime.push_back(uptimePercent);
+  
+  // Enforce max history size per service
+  if (serviceHistories[historyIndex].hourlyUptime.size() > MAX_HISTORY_HOURS) {
+    // Remove oldest hour
+    serviceHistories[historyIndex].hourlyUptime.erase(
+      serviceHistories[historyIndex].hourlyUptime.begin()
+    );
+    // Update first hour timestamp
+    serviceHistories[historyIndex].firstHourTimestamp += 3600;
+  }
+  
+  // Reset counters for next hour
+  serviceHistories[historyIndex].checksThisHour = 0;
+  serviceHistories[historyIndex].passesThisHour = 0;
+}
+
+// Record a check result for historical tracking
+void recordCheckResult(const String& serviceId, bool isUp) {
+  int historyIndex = getHistoryIndex(serviceId);
+  if (historyIndex == -1) {
+    // Initialize if not found
+    initServiceHistory(serviceId);
+    historyIndex = getHistoryIndex(serviceId);
+    if (historyIndex == -1) return;  // Failed to initialize
+  }
+  
+  // Get current time (use Unix timestamp)
+  time_t now = time(nullptr);
+  
+  // If this is the first check, set up the time tracking
+  if (serviceHistories[historyIndex].currentHourStart == 0) {
+    serviceHistories[historyIndex].currentHourStart = (now / 3600) * 3600;  // Round to hour
+    serviceHistories[historyIndex].firstHourTimestamp = serviceHistories[historyIndex].currentHourStart;
+  }
+  
+  // Check if we've moved to a new hour
+  unsigned long currentHour = (now / 3600) * 3600;
+  if (currentHour > serviceHistories[historyIndex].currentHourStart) {
+    // Finalize the previous hour
+    finalizeCurrentHour(historyIndex);
+    
+    // Handle any skipped hours (if checks were paused or system was down)
+    unsigned long missedHours = (currentHour - serviceHistories[historyIndex].currentHourStart) / 3600 - 1;
+    for (unsigned long i = 0; i < missedHours && i < 24; i++) {  // Cap at 24 hours
+      // Add 0% uptime for missed hours
+      serviceHistories[historyIndex].hourlyUptime.push_back(0);
+      if (serviceHistories[historyIndex].hourlyUptime.size() > MAX_HISTORY_HOURS) {
+        serviceHistories[historyIndex].hourlyUptime.erase(
+          serviceHistories[historyIndex].hourlyUptime.begin()
+        );
+        serviceHistories[historyIndex].firstHourTimestamp += 3600;
+      }
+    }
+    
+    serviceHistories[historyIndex].currentHourStart = currentHour;
+  }
+  
+  // Record this check
+  serviceHistories[historyIndex].checksThisHour++;
+  if (isUp) {
+    serviceHistories[historyIndex].passesThisHour++;
+  }
+}
+
+// Save history to filesystem
+void saveHistory() {
+  if (!littleFsReady) {
+    Serial.println("LittleFS not mounted; skipping saveHistory");
+    return;
+  }
+  
+  File file = LittleFS.open("/history.json", "w");
+  if (!file) {
+    Serial.println("Failed to open history.json for writing");
+    return;
+  }
+  
+  JsonDocument doc;
+  JsonArray array = doc["histories"].to<JsonArray>();
+  
+  size_t totalBytes = 0;
+  for (int i = 0; i < MAX_SERVICES; i++) {
+    if (serviceHistories[i].serviceId.length() == 0) continue;
+    
+    JsonObject obj = array.add<JsonObject>();
+    obj["serviceId"] = serviceHistories[i].serviceId;
+    obj["firstHourTimestamp"] = (unsigned long)serviceHistories[i].firstHourTimestamp;
+    obj["currentHourStart"] = (unsigned long)serviceHistories[i].currentHourStart;
+    obj["checksThisHour"] = serviceHistories[i].checksThisHour;
+    obj["passesThisHour"] = serviceHistories[i].passesThisHour;
+    
+    // Store hourly uptime as array
+    JsonArray uptimeArray = obj["hourlyUptime"].to<JsonArray>();
+    for (uint8_t uptime : serviceHistories[i].hourlyUptime) {
+      uptimeArray.add(uptime);
+    }
+    
+    totalBytes += serviceHistories[i].hourlyUptime.size();
+  }
+  
+  if (serializeJson(doc, file) == 0) {
+    Serial.println("Failed to serialize history.json");
+  } else {
+    Serial.printf("History saved (%zu bytes tracked)\n", totalBytes);
+  }
+  file.close();
+}
+
+// Load history from filesystem
+void loadHistory() {
+  if (!littleFsReady) {
+    Serial.println("LittleFS not mounted; skipping loadHistory");
+    return;
+  }
+  
+  // Initialize all histories to empty
+  for (int i = 0; i < MAX_SERVICES; i++) {
+    serviceHistories[i].serviceId = "";
+    serviceHistories[i].hourlyUptime.clear();
+    serviceHistories[i].firstHourTimestamp = 0;
+    serviceHistories[i].checksThisHour = 0;
+    serviceHistories[i].passesThisHour = 0;
+    serviceHistories[i].currentHourStart = 0;
+  }
+  
+  File file = LittleFS.open("/history.json", "r");
+  if (!file) {
+    Serial.println("No history.json found, starting fresh");
+    return;
+  }
+  
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, file);
+  file.close();
+  
+  if (error) {
+    Serial.println("Failed to parse history.json");
+    return;
+  }
+  
+  JsonArray array = doc["histories"];
+  int historyCount = 0;
+  
+  for (JsonObject obj : array) {
+    if (historyCount >= MAX_SERVICES) break;
+    
+    serviceHistories[historyCount].serviceId = obj["serviceId"].as<String>();
+    serviceHistories[historyCount].firstHourTimestamp = obj["firstHourTimestamp"] | 0;
+    serviceHistories[historyCount].currentHourStart = obj["currentHourStart"] | 0;
+    serviceHistories[historyCount].checksThisHour = obj["checksThisHour"] | 0;
+    serviceHistories[historyCount].passesThisHour = obj["passesThisHour"] | 0;
+    
+    JsonArray uptimeArray = obj["hourlyUptime"];
+    for (JsonVariant v : uptimeArray) {
+      serviceHistories[historyCount].hourlyUptime.push_back(v.as<uint8_t>());
+    }
+    
+    historyCount++;
+  }
+  
+  Serial.printf("Loaded history for %d services\n", historyCount);
+}
+
 String getServiceTypeString(ServiceType type) {
   switch (type) {
     case TYPE_HTTP_GET: return "http_get";
@@ -4135,10 +4437,26 @@ String getWebPage() {
         .empty-state { text-align: center; padding: 60px 20px; color: white; }
         .empty-state h3 { font-size: 1.5em; margin-bottom: 10px; }
         .hidden { display: none; }
+        .history-container { display: flex; align-items: center; gap: 8px; }
+        .history-graph { display: flex; gap: 2px; align-items: center; }
+        .history-bar {
+            width: 4px; height: 20px; border-radius: 2px;
+            background: #e5e7eb; transition: background 0.3s;
+        }
+        .history-bar.up-100 { background: #10b981; }
+        .history-bar.up-75 { background: #34d399; }
+        .history-bar.up-50 { background: #fbbf24; }
+        .history-bar.up-25 { background: #f87171; }
+        .history-bar.up-0 { background: #ef4444; }
+        .uptime-percentage {
+            font-size: 0.85em; font-weight: 600; color: #10b981;
+            min-width: 45px; text-align: right;
+        }
         @media (max-width: 768px) {
             .header h1 { font-size: 1.8em; }
             .status-table { padding: 15px; }
             th, td { padding: 10px 8px; font-size: 0.9em; }
+            .history-bar { width: 3px; height: 16px; }
         }
     </style>
 </head>
@@ -4158,6 +4476,7 @@ String getWebPage() {
                         <th>Service</th>
                         <th>Type</th>
                         <th>Status</th>
+                        <th>Uptime (30d)</th>
                         <th>Last Checked</th>
                     </tr>
                 </thead>
@@ -4172,6 +4491,8 @@ String getWebPage() {
     </div>
     <script>
         let services = [];
+        let serviceHistories = {};
+        
         async function loadServices() {
             try {
                 const response = await fetch('/api/services');
@@ -4179,11 +4500,60 @@ String getWebPage() {
                 services = data.services || [];
                 // Sort services alphabetically by name
                 services.sort((a, b) => a.name.localeCompare(b.name));
+                
+                // Load history for all services
+                await loadHistories();
+                
                 renderServices();
             } catch (error) {
                 console.error('Error loading services:', error);
             }
         }
+        
+        async function loadHistories() {
+            // Load history for each service
+            const historyPromises = services.map(async service => {
+                try {
+                    const response = await fetch(`/api/history/${service.id}`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        serviceHistories[service.id] = data;
+                    }
+                } catch (error) {
+                    console.error(`Error loading history for ${service.name}:`, error);
+                }
+            });
+            await Promise.all(historyPromises);
+        }
+        
+        function renderHistoryGraph(serviceId) {
+            const history = serviceHistories[serviceId];
+            if (!history || !history.hourlyUptime || history.hourlyUptime.length === 0) {
+                return '<div class="history-container"><span class="uptime-percentage">N/A</span></div>';
+            }
+            
+            // Take last 90 hours (about 4 days) for display
+            const recentHistory = history.hourlyUptime.slice(-90);
+            const uptimePercent = history.uptimePercentage.toFixed(1);
+            
+            const bars = recentHistory.map(uptime => {
+                let className = 'history-bar';
+                if (uptime >= 95) className += ' up-100';
+                else if (uptime >= 75) className += ' up-75';
+                else if (uptime >= 50) className += ' up-50';
+                else if (uptime > 0) className += ' up-25';
+                else className += ' up-0';
+                return `<div class="${className}" title="${uptime}% uptime"></div>`;
+            }).join('');
+            
+            return `
+                <div class="history-container">
+                    <div class="history-graph">${bars}</div>
+                    <span class="uptime-percentage">${uptimePercent}%</span>
+                </div>
+            `;
+        }
+        
         function renderServices() {
             const tbody = document.getElementById('servicesTableBody');
             const table = document.getElementById('statusTable');
@@ -4234,6 +4604,7 @@ String getWebPage() {
                         <td class="service-name">${service.name}</td>
                         <td>${typeDisplay}</td>
                         <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+                        <td>${renderHistoryGraph(service.id)}</td>
                         <td>${uptimeStr}</td>
                     </tr>
                 `;
