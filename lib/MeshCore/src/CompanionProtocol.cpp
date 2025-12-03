@@ -346,19 +346,30 @@ bool CompanionProtocol::startSession(const String& appName) {
         // CMD_APP_START payload: version (1), reserved (6), app_name (variable)
         size_t appNameLen = appName.length();
         size_t payloadLen = 1 + APP_START_RESERVED_SIZE + appNameLen;
-        std::vector<uint8_t> payload;
-        payload.reserve(payloadLen);
         
-        payload.push_back(m_protocolVersion);  // version
-        // Use insert for reserved bytes (more efficient than push_back loop)
-        payload.insert(payload.end(), APP_START_RESERVED_SIZE, 0);
-        // Use insert for app name (more efficient than push_back loop)
-        payload.insert(payload.end(), appName.begin(), appName.end());
+        // Allocate payload buffer on heap to avoid stack overflow
+        uint8_t* payload = new uint8_t[payloadLen];
+        if (payload == nullptr) {
+            m_lastError = "Failed to allocate payload buffer";
+            return false;
+        }
+        
+        size_t offset = 0;
+        payload[offset++] = m_protocolVersion;  // version
+        // Reserved bytes (6 bytes)
+        for (size_t i = 0; i < APP_START_RESERVED_SIZE; i++) {
+            payload[offset++] = 0;
+        }
+        // App name
+        memcpy(payload + offset, appName.c_str(), appNameLen);
 
         // Set up expected response tracking BEFORE sending the command
         prepareForExpectedResponse(RESP_CODE_SELF_INFO);
         
-        if (!m_codec.sendFrame(CMD_APP_START, payload)) {
+        bool sendResult = m_codec.sendFrame(CMD_APP_START, payload, payloadLen);
+        delete[] payload;
+        
+        if (!sendResult) {
             m_lastError = "Failed to send CMD_APP_START";
             return false;
         }
@@ -475,11 +486,19 @@ bool CompanionProtocol::sendTextMessageToChannel(uint8_t channelIndex, const Str
 
     // CMD_SEND_CHANNEL_TXT_MSG: txt_type(1) + channel_index(1) + timestamp(4) + text
     const size_t TIMESTAMP_SIZE = 4;
-    std::vector<uint8_t> payload;
-    payload.reserve(1 + 1 + TIMESTAMP_SIZE + textLen);
+    const size_t payloadLen = 1 + 1 + TIMESTAMP_SIZE + textLen;
     
-    payload.push_back(TXT_TYPE_PLAIN);  // txt_type
-    payload.push_back(channelIndex);     // channel_index
+    // Allocate payload buffer on heap to avoid stack overflow.
+    // BLE operations can run in limited stack context (~3-4KB).
+    uint8_t* payload = new uint8_t[payloadLen];
+    if (payload == nullptr) {
+        m_lastError = "Failed to allocate payload buffer";
+        return false;
+    }
+    
+    size_t offset = 0;
+    payload[offset++] = TXT_TYPE_PLAIN;  // txt_type
+    payload[offset++] = channelIndex;     // channel_index
     
     // Timestamp - use current Unix time (little-endian, 4 bytes)
     // This requires NTP time to be synchronized via configTime() before calling.
@@ -487,20 +506,23 @@ bool CompanionProtocol::sendTextMessageToChannel(uint8_t channelIndex, const Str
     // This is a protocol limitation, not a bug in this implementation.
     time_t now = time(nullptr);
     uint32_t timestamp = static_cast<uint32_t>(now);
-    payload.push_back(static_cast<uint8_t>(timestamp & 0xFF));
-    payload.push_back(static_cast<uint8_t>((timestamp >> 8) & 0xFF));
-    payload.push_back(static_cast<uint8_t>((timestamp >> 16) & 0xFF));
-    payload.push_back(static_cast<uint8_t>((timestamp >> 24) & 0xFF));
+    payload[offset++] = static_cast<uint8_t>(timestamp & 0xFF);
+    payload[offset++] = static_cast<uint8_t>((timestamp >> 8) & 0xFF);
+    payload[offset++] = static_cast<uint8_t>((timestamp >> 16) & 0xFF);
+    payload[offset++] = static_cast<uint8_t>((timestamp >> 24) & 0xFF);
     
-    // Message text (use insert for efficiency)
-    payload.insert(payload.end(), message.begin(), message.begin() + textLen);
+    // Message text
+    memcpy(payload + offset, message.c_str(), textLen);
 
     // Set up expected response tracking BEFORE sending the command.
     // Wait for send confirmation, accepting either RESP_CODE_OK or RESP_CODE_SENT
     // and ignoring any push notifications that might arrive.
     prepareForExpectedResponse(RESP_CODE_OK, RESP_CODE_SENT);
     
-    if (!m_codec.sendFrame(CMD_SEND_CHANNEL_TXT_MSG, payload)) {
+    bool sendResult = m_codec.sendFrame(CMD_SEND_CHANNEL_TXT_MSG, payload, payloadLen);
+    delete[] payload;
+    
+    if (!sendResult) {
         m_lastError = "Failed to send message";
         return false;
     }
@@ -608,26 +630,34 @@ bool CompanionProtocol::sendTextMessageToContact(const String& pubKeyHex, const 
 
     // CMD_SEND_TXT_MSG: txt_type(1) + pub_key(32) + timestamp(4) + text
     const size_t TIMESTAMP_SIZE = 4;
-    std::vector<uint8_t> payload;
-    payload.reserve(1 + PUB_KEY_SIZE + TIMESTAMP_SIZE + textLen);
+    const size_t payloadLen = 1 + PUB_KEY_SIZE + TIMESTAMP_SIZE + textLen;
     
-    payload.push_back(TXT_TYPE_PLAIN);  // txt_type
+    // Allocate payload buffer on heap to avoid stack overflow
+    uint8_t* payload = new uint8_t[payloadLen];
+    if (payload == nullptr) {
+        m_lastError = "Failed to allocate payload buffer";
+        return false;
+    }
+    
+    size_t offset = 0;
+    payload[offset++] = TXT_TYPE_PLAIN;  // txt_type
     
     // Public key (32 bytes)
-    payload.insert(payload.end(), pubKey, pubKey + PUB_KEY_SIZE);
+    memcpy(payload + offset, pubKey, PUB_KEY_SIZE);
+    offset += PUB_KEY_SIZE;
     
     // Timestamp - use current Unix time (little-endian, 4 bytes)
     // This requires NTP time to be synchronized via configTime() before calling.
     // The ESP32 synchronizes time at boot in main.cpp initWiFi().
     time_t now = time(nullptr);
     uint32_t timestamp = static_cast<uint32_t>(now);
-    payload.push_back(static_cast<uint8_t>(timestamp & 0xFF));
-    payload.push_back(static_cast<uint8_t>((timestamp >> 8) & 0xFF));
-    payload.push_back(static_cast<uint8_t>((timestamp >> 16) & 0xFF));
-    payload.push_back(static_cast<uint8_t>((timestamp >> 24) & 0xFF));
+    payload[offset++] = static_cast<uint8_t>(timestamp & 0xFF);
+    payload[offset++] = static_cast<uint8_t>((timestamp >> 8) & 0xFF);
+    payload[offset++] = static_cast<uint8_t>((timestamp >> 16) & 0xFF);
+    payload[offset++] = static_cast<uint8_t>((timestamp >> 24) & 0xFF);
     
     // Message text (with password prefix if authenticated)
-    payload.insert(payload.end(), fullMessage.begin(), fullMessage.begin() + textLen);
+    memcpy(payload + offset, fullMessage.c_str(), textLen);
 
     Serial.printf("CompanionProtocol: sending DM to contact (pubkey: %s...)\n", 
                   pubKeyHex.substring(0, 8).c_str());
@@ -635,7 +665,10 @@ bool CompanionProtocol::sendTextMessageToContact(const String& pubKeyHex, const 
     // Set up expected response tracking BEFORE sending the command.
     prepareForExpectedResponse(RESP_CODE_OK, RESP_CODE_SENT);
     
-    if (!m_codec.sendFrame(CMD_SEND_TXT_MSG, payload)) {
+    bool sendResult = m_codec.sendFrame(CMD_SEND_TXT_MSG, payload, payloadLen);
+    delete[] payload;
+    
+    if (!sendResult) {
         m_lastError = "Failed to send message";
         return false;
     }

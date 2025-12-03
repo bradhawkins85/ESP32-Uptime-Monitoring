@@ -32,13 +32,18 @@ bool FrameCodec::sendFrame(uint8_t cmd, const uint8_t* payload, size_t payloadLe
         return false;
     }
 
-    // Build frame buffer
-    std::vector<uint8_t> frame;
-    frame.reserve(totalLen);
-    frame.push_back(cmd);
+    // Build frame buffer on heap to avoid stack overflow in BLE callback context.
+    // BLE callbacks run in limited stack (~3-4KB), and large payloads (e.g., 103 bytes)
+    // can cause stack overflow when combined with deep call chains.
+    uint8_t* frame = new uint8_t[totalLen];
+    if (frame == nullptr) {
+        Serial.println("FrameCodec: failed to allocate frame buffer");
+        return false;
+    }
     
+    frame[0] = cmd;
     if (payload != nullptr && payloadLen > 0) {
-        frame.insert(frame.end(), payload, payload + payloadLen);
+        memcpy(frame + 1, payload, payloadLen);
     }
 
     Serial.printf("FrameCodec TX: cmd 0x%02X, payload length %d\n", cmd, (int)payloadLen);
@@ -49,7 +54,9 @@ bool FrameCodec::sendFrame(uint8_t cmd, const uint8_t* payload, size_t payloadLe
     // may have accumulated processing time without yielding.
     vTaskDelay(pdMS_TO_TICKS(5));
     
-    return m_transport.send(frame.data(), frame.size());
+    bool result = m_transport.send(frame, totalLen);
+    delete[] frame;
+    return result;
 }
 
 bool FrameCodec::sendFrame(uint8_t cmd, const std::vector<uint8_t>& payload) {

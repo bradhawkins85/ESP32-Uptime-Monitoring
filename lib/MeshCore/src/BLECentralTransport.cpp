@@ -157,10 +157,6 @@ bool BLECentralTransport::send(const uint8_t* data, size_t len) {
     }
 
     try {
-        // Copy data to non-const buffer as BLE library expects mutable data
-        // This ensures we don't violate the const contract of the interface
-        std::vector<uint8_t> buffer(data, data + len);
-        
         // Yield to the scheduler BEFORE the blocking BLE write to allow pending
         // tasks to run and feed the system watchdog. This prevents TG0WDT_SYS_RST
         // (Timer Group 0 Watchdog Timer System Reset) when the BLE stack holds
@@ -174,7 +170,8 @@ bool BLECentralTransport::send(const uint8_t* data, size_t len) {
         vTaskDelay(pdMS_TO_TICKS(10));
         
         // Use Write With Response for reliable protocol commands
-        m_txCharacteristic->writeValue(buffer.data(), buffer.size(), true);
+        // Cast away const as BLE library expects mutable data (it doesn't actually modify it)
+        m_txCharacteristic->writeValue(const_cast<uint8_t*>(data), len, true);
         
         // Yield again after the BLE write completes to allow the scheduler to run.
         // This is especially important when multiple frames are sent in sequence,
