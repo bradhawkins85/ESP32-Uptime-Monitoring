@@ -1294,11 +1294,29 @@ void initWebServer() {
     // Test MeshCore
     if (isMeshCoreConfigured()) {
       totalCount++;
-      bool success = sendMeshCoreNotificationWithStatus(title, message);
+      
+      // Queue the notification instead of sending directly to avoid blocking async_tcp task
+      // which causes a watchdog timeout crash
+      bool queued = false;
+      if (!bleOperationInProgress && !pendingMeshNotification) {
+        noInterrupts();
+        pendingMeshTitle = title;
+        pendingMeshMessage = message;
+        pendingMeshNotification = true;
+        interrupts();
+        queued = true;
+      }
+      
       JsonObject meshResult = results.add<JsonObject>();
       meshResult["channel"] = "MeshCore";
-      meshResult["success"] = success;
-      if (success) successCount++;
+      if (queued) {
+        meshResult["success"] = true;
+        meshResult["status"] = "queued";
+        successCount++;
+      } else {
+        meshResult["success"] = false;
+        meshResult["error"] = "BLE operation already in progress";
+      }
     }
     
     doc["success"] = (successCount > 0);
@@ -4382,6 +4400,7 @@ String getAdminPage() {
             padding: 0 18px;
             line-height: 1;
             box-sizing: border-box;
+            margin-bottom: 0;
         }
 
         .services-table {
