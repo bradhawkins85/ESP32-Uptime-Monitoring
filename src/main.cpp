@@ -654,6 +654,18 @@ struct ServiceHistory {
   unsigned long currentHourStart;      // Timestamp (seconds) of current hour being tracked
 };
 
+// Event log structure for detailed up/down state changes
+struct ServiceEvent {
+  unsigned long timestamp;  // Unix timestamp (seconds)
+  bool isUp;                // true if service went UP, false if it went DOWN
+  String reason;            // Optional: reason for the state change
+};
+
+struct ServiceEventLog {
+  String serviceId;
+  std::vector<ServiceEvent> events;
+};
+
 // Store up to 20 services
 const int MAX_SERVICES = 20;
 Service services[MAX_SERVICES];
@@ -662,10 +674,16 @@ int serviceCount = 0;
 // Historical data for all services
 ServiceHistory serviceHistories[MAX_SERVICES];
 
+// Event logs for all services
+ServiceEventLog serviceEventLogs[MAX_SERVICES];
+
 // Historical data constants
 const int MAX_HISTORY_HOURS = 720;  // 30 days of hourly data per service (720 bytes/service)
 const int DISPLAY_HISTORY_HOURS = 90;  // Show last 90 hours (~4 days) in UI for readability
 const int MAX_MISSED_HOURS_TO_FILL = 24;  // Maximum gap to backfill with 0% uptime
+
+// Event log constants
+const int MAX_EVENTS_PER_SERVICE = 100;  // Keep last 100 events per service
 
 // Filesystem readiness flag to avoid LittleFS access before mount
 static bool littleFsReady = false;
@@ -764,6 +782,14 @@ int getHistoryIndex(const String& serviceId);
 void finalizeCurrentHour(int historyIndex);
 void removeServiceHistory(const String& serviceId);
 
+// Event log functions
+void recordServiceEvent(const String& serviceId, bool isUp, const String& reason = "");
+int getEventLogIndex(const String& serviceId);
+void initServiceEventLog(const String& serviceId);
+void removeServiceEventLog(const String& serviceId);
+void saveEventLogs();
+void loadEventLogs();
+
 // Notification sending functions that return success status
 bool sendNtfyNotificationWithStatus(const String& title, const String& message, const String& tags);
 bool sendDiscordNotificationWithStatus(const String& title, const String& message);
@@ -805,6 +831,9 @@ void setup() {
 
   // Load historical data
   loadHistory();
+
+  // Load event logs
+  loadEventLogs();
 
   // Initialize web server
   initWebServer();
@@ -1558,6 +1587,9 @@ void initWebServer() {
 
     // Remove history for the deleted service
     removeServiceHistory(serviceId);
+    
+    // Remove event log for the deleted service
+    removeServiceEventLog(serviceId);
 
     saveServices();
     request->send(200, "application/json", "{\"success\":true}");
@@ -1949,6 +1981,43 @@ void initWebServer() {
     request->send(200, "application/json", response);
   });
 
+  // Get event log for a specific service
+  server.on("/api/events/*", HTTP_GET, [](AsyncWebServerRequest *request) {
+    String path = request->url();
+    String serviceId = path.substring(path.lastIndexOf('/') + 1);
+    
+    if (serviceId.length() == 0) {
+      request->send(400, "application/json", "{\"error\":\"Missing service ID\"}");
+      return;
+    }
+    
+    // Find the event log for this service
+    int eventLogIndex = getEventLogIndex(serviceId);
+    if (eventLogIndex == -1) {
+      // Return empty event log if not found
+      request->send(200, "application/json", "{\"serviceId\":\"" + serviceId + "\",\"events\":[]}");
+      return;
+    }
+    
+    JsonDocument doc;
+    doc["serviceId"] = serviceEventLogs[eventLogIndex].serviceId;
+    
+    // Add events array
+    JsonArray eventsArray = doc["events"].to<JsonArray>();
+    for (const ServiceEvent& event : serviceEventLogs[eventLogIndex].events) {
+      JsonObject eventObj = eventsArray.add<JsonObject>();
+      eventObj["timestamp"] = event.timestamp;
+      eventObj["isUp"] = event.isUp;
+      if (event.reason.length() > 0) {
+        eventObj["reason"] = event.reason;
+      }
+    }
+    
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+  });
+
   // Initialize ElegantOTA for firmware updates via web interface
   // Access the update page at /update
   // Use existing web authentication credentials if configured
@@ -2071,6 +2140,12 @@ void checkServices() {
         services[i].isUp ? "UP" : "DOWN",
         services[i].isUp ? services[i].consecutivePasses : services[i].consecutiveFails,
         services[i].isUp ? "passes" : "fails");
+
+      // Record the state change event
+      String reason = services[i].isUp ? 
+        String(services[i].consecutivePasses) + " consecutive passes" :
+        String(services[i].consecutiveFails) + " consecutive fails";
+      recordServiceEvent(services[i].id, services[i].isUp, reason);
 
 #ifdef HAS_LCD
       // Set display update flag BEFORE notifications to ensure display refreshes
@@ -3795,6 +3870,195 @@ void removeServiceHistory(const String& serviceId) {
   saveHistory();
 }
 
+// ---- Event Log Functions ----
+
+// Get event log array index for a given service ID
+int getEventLogIndex(const String& serviceId) {
+  for (int i = 0; i < MAX_SERVICES; i++) {
+    if (serviceEventLogs[i].serviceId == serviceId) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+// Initialize event log for a new service
+void initServiceEventLog(const String& serviceId) {
+  // Find empty slot
+  int index = -1;
+  for (int i = 0; i < MAX_SERVICES; i++) {
+    if (serviceEventLogs[i].serviceId.length() == 0) {
+      index = i;
+      break;
+    }
+  }
+  
+  if (index == -1) {
+    Serial.println("ERROR: No space for service event log");
+    return;
+  }
+  
+  serviceEventLogs[index].serviceId = serviceId;
+  serviceEventLogs[index].events.clear();
+  
+  Serial.printf("Initialized event log for service: %s\n", serviceId.c_str());
+}
+
+// Record a service state change event
+void recordServiceEvent(const String& serviceId, bool isUp, const String& reason) {
+  int eventLogIndex = getEventLogIndex(serviceId);
+  
+  // If event log doesn't exist yet, initialize it
+  if (eventLogIndex == -1) {
+    initServiceEventLog(serviceId);
+    eventLogIndex = getEventLogIndex(serviceId);
+  }
+  
+  if (eventLogIndex == -1) {
+    Serial.println("ERROR: Failed to initialize event log");
+    return;
+  }
+  
+  // Get current Unix timestamp
+  time_t now;
+  time(&now);
+  
+  // Create new event
+  ServiceEvent event;
+  event.timestamp = (unsigned long)now;
+  event.isUp = isUp;
+  event.reason = reason;
+  
+  // Add event to the log
+  serviceEventLogs[eventLogIndex].events.push_back(event);
+  
+  // Enforce max events per service
+  if (serviceEventLogs[eventLogIndex].events.size() > MAX_EVENTS_PER_SERVICE) {
+    // Remove oldest event
+    serviceEventLogs[eventLogIndex].events.erase(
+      serviceEventLogs[eventLogIndex].events.begin()
+    );
+  }
+  
+  Serial.printf("Recorded event for service '%s': %s at %lu\n", 
+    serviceId.c_str(), isUp ? "UP" : "DOWN", event.timestamp);
+  
+  // Save event logs to disk
+  saveEventLogs();
+}
+
+// Remove event log for a service
+void removeServiceEventLog(const String& serviceId) {
+  int eventLogIndex = getEventLogIndex(serviceId);
+  if (eventLogIndex == -1) {
+    return;  // Event log not found, nothing to remove
+  }
+  
+  // Clear the event log data
+  serviceEventLogs[eventLogIndex].serviceId = "";
+  serviceEventLogs[eventLogIndex].events.clear();
+  
+  Serial.printf("Removed event log for service: %s\n", serviceId.c_str());
+  
+  // Save the updated event logs to disk
+  saveEventLogs();
+}
+
+// Save event logs to LittleFS
+void saveEventLogs() {
+  if (!littleFsReady) {
+    Serial.println("WARN: Skipping event log save - LittleFS not ready");
+    return;
+  }
+  
+  File file = LittleFS.open("/event_logs.json", "w");
+  if (!file) {
+    Serial.println("ERROR: Failed to open event_logs.json for writing");
+    return;
+  }
+  
+  JsonDocument doc;
+  JsonArray logsArray = doc["eventLogs"].to<JsonArray>();
+  
+  for (int i = 0; i < MAX_SERVICES; i++) {
+    if (serviceEventLogs[i].serviceId.length() == 0) continue;
+    
+    JsonObject obj = logsArray.add<JsonObject>();
+    obj["serviceId"] = serviceEventLogs[i].serviceId;
+    
+    JsonArray eventsArray = obj["events"].to<JsonArray>();
+    for (const ServiceEvent& event : serviceEventLogs[i].events) {
+      JsonObject eventObj = eventsArray.add<JsonObject>();
+      eventObj["timestamp"] = event.timestamp;
+      eventObj["isUp"] = event.isUp;
+      if (event.reason.length() > 0) {
+        eventObj["reason"] = event.reason;
+      }
+    }
+  }
+  
+  serializeJson(doc, file);
+  file.close();
+  
+  Serial.println("Event logs saved to LittleFS");
+}
+
+// Load event logs from LittleFS
+void loadEventLogs() {
+  if (!littleFsReady) {
+    Serial.println("WARN: Skipping event log load - LittleFS not ready");
+    return;
+  }
+  
+  // Initialize all event logs
+  for (int i = 0; i < MAX_SERVICES; i++) {
+    serviceEventLogs[i].serviceId = "";
+    serviceEventLogs[i].events.clear();
+  }
+  
+  if (!LittleFS.exists("/event_logs.json")) {
+    Serial.println("No event_logs.json file found - starting fresh");
+    return;
+  }
+  
+  File file = LittleFS.open("/event_logs.json", "r");
+  if (!file) {
+    Serial.println("ERROR: Failed to open event_logs.json for reading");
+    return;
+  }
+  
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, file);
+  file.close();
+  
+  if (error) {
+    Serial.printf("ERROR: Failed to parse event_logs.json: %s\n", error.c_str());
+    return;
+  }
+  
+  JsonArray logsArray = doc["eventLogs"];
+  int eventLogCount = 0;
+  
+  for (JsonObject obj : logsArray) {
+    if (eventLogCount >= MAX_SERVICES) break;
+    
+    serviceEventLogs[eventLogCount].serviceId = obj["serviceId"].as<String>();
+    
+    JsonArray eventsArray = obj["events"];
+    for (JsonObject eventObj : eventsArray) {
+      ServiceEvent event;
+      event.timestamp = eventObj["timestamp"].as<unsigned long>();
+      event.isUp = eventObj["isUp"].as<bool>();
+      event.reason = eventObj["reason"] | "";
+      serviceEventLogs[eventLogCount].events.push_back(event);
+    }
+    
+    eventLogCount++;
+  }
+  
+  Serial.printf("Loaded event logs for %d services\n", eventLogCount);
+}
+
 String getServiceTypeString(ServiceType type) {
   switch (type) {
     case TYPE_HTTP_GET: return "http_get";
@@ -4480,11 +4744,119 @@ String getWebPage() {
             font-size: 0.85em; font-weight: 600; color: #10b981;
             min-width: 45px; text-align: right;
         }
+        .history-container { cursor: pointer; }
+        .history-container:hover .history-graph { opacity: 0.8; }
+        
+        /* Modal styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            animation: fadeIn 0.3s;
+        }
+        .modal.show { display: flex; align-items: center; justify-content: center; }
+        .modal-content {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+            animation: slideUp 0.3s;
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #e5e7eb;
+        }
+        .modal-header h2 {
+            color: #1f2937;
+            font-size: 1.5em;
+            margin: 0;
+        }
+        .close-btn {
+            background: none;
+            border: none;
+            font-size: 1.5em;
+            color: #6b7280;
+            cursor: pointer;
+            padding: 0;
+            width: 30px;
+            height: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+        .close-btn:hover {
+            background: #f3f4f6;
+            color: #1f2937;
+        }
+        .event-list {
+            margin-top: 15px;
+        }
+        .event-item {
+            padding: 15px;
+            margin-bottom: 10px;
+            border-left: 4px solid;
+            background: #f9fafb;
+            border-radius: 4px;
+        }
+        .event-item.up {
+            border-left-color: #10b981;
+            background: #d1fae5;
+        }
+        .event-item.down {
+            border-left-color: #ef4444;
+            background: #fee2e2;
+        }
+        .event-time {
+            font-size: 0.9em;
+            color: #6b7280;
+            margin-bottom: 5px;
+        }
+        .event-status {
+            font-weight: 600;
+            font-size: 1.1em;
+            margin-bottom: 5px;
+        }
+        .event-item.up .event-status { color: #065f46; }
+        .event-item.down .event-status { color: #991b1b; }
+        .event-reason {
+            font-size: 0.9em;
+            color: #4b5563;
+        }
+        .no-events {
+            text-align: center;
+            padding: 40px 20px;
+            color: #6b7280;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        @keyframes slideUp {
+            from { transform: translateY(20px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
         @media (max-width: 768px) {
             .header h1 { font-size: 1.8em; }
             .status-table { padding: 15px; }
             th, td { padding: 10px 8px; font-size: 0.9em; }
             .history-bar { width: 3px; height: 16px; }
+            .modal-content { padding: 20px; }
+            .modal-header h2 { font-size: 1.2em; }
         }
     </style>
 </head>
@@ -4517,6 +4889,20 @@ String getWebPage() {
             <p>Visit the <a href="/admin" style="color: white; text-decoration: underline;">administration panel</a> to add services</p>
         </div>
     </div>
+    
+    <!-- Event Log Modal -->
+    <div id="eventModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modalServiceName">Event Log</h2>
+                <button class="close-btn" onclick="closeEventModal()">&times;</button>
+            </div>
+            <div id="eventList" class="event-list">
+                <!-- Events will be populated here -->
+            </div>
+        </div>
+    </div>
+    
     <script>
         let services = [];
         let serviceHistories = {};
@@ -4577,12 +4963,81 @@ String getWebPage() {
             }).join('');
             
             return `
-                <div class="history-container">
+                <div class="history-container" onclick="showEventLog('${serviceId}')" title="Click to view event log">
                     <div class="history-graph">${bars}</div>
                     <span class="uptime-percentage">${uptimePercent}%</span>
                 </div>
             `;
         }
+        
+        async function showEventLog(serviceId) {
+            // Find the service name
+            const service = services.find(s => s.id === serviceId);
+            const serviceName = service ? service.name : 'Service';
+            
+            // Update modal title
+            document.getElementById('modalServiceName').textContent = `Event Log - ${serviceName}`;
+            
+            // Show modal
+            document.getElementById('eventModal').classList.add('show');
+            
+            // Show loading state
+            document.getElementById('eventList').innerHTML = '<div class="no-events">Loading events...</div>';
+            
+            try {
+                // Fetch event log
+                const response = await fetch(`/api/events/${serviceId}`);
+                const data = await response.json();
+                
+                // Render events
+                const eventList = document.getElementById('eventList');
+                
+                if (!data.events || data.events.length === 0) {
+                    eventList.innerHTML = '<div class="no-events">No events recorded yet</div>';
+                    return;
+                }
+                
+                // Sort events by timestamp (most recent first)
+                const sortedEvents = [...data.events].sort((a, b) => b.timestamp - a.timestamp);
+                
+                eventList.innerHTML = sortedEvents.map(event => {
+                    const date = new Date(event.timestamp * 1000);
+                    const timeStr = date.toLocaleString();
+                    const statusClass = event.isUp ? 'up' : 'down';
+                    const statusText = event.isUp ? 'Service UP' : 'Service DOWN';
+                    
+                    return `
+                        <div class="event-item ${statusClass}">
+                            <div class="event-time">${timeStr}</div>
+                            <div class="event-status">${statusText}</div>
+                            ${event.reason ? `<div class="event-reason">${event.reason}</div>` : ''}
+                        </div>
+                    `;
+                }).join('');
+            } catch (error) {
+                console.error('Error loading events:', error);
+                document.getElementById('eventList').innerHTML = '<div class="no-events">Error loading events</div>';
+            }
+        }
+        
+        function closeEventModal() {
+            document.getElementById('eventModal').classList.remove('show');
+        }
+        
+        // Close modal when clicking outside
+        window.onclick = function(event) {
+            const modal = document.getElementById('eventModal');
+            if (event.target === modal) {
+                closeEventModal();
+            }
+        };
+        
+        // Close modal on Escape key
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') {
+                closeEventModal();
+            }
+        });
         
         function renderServices() {
             const tbody = document.getElementById('servicesTableBody');
