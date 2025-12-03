@@ -1991,11 +1991,39 @@ void initWebServer() {
       return;
     }
     
+    // Validate serviceId format (should be alphanumeric)
+    for (unsigned int i = 0; i < serviceId.length(); i++) {
+      char c = serviceId.charAt(i);
+      if (!isalnum(c)) {
+        request->send(400, "application/json", "{\"error\":\"Invalid service ID format\"}");
+        return;
+      }
+    }
+    
+    // Verify the service exists in the services array
+    bool serviceExists = false;
+    for (int i = 0; i < serviceCount; i++) {
+      if (services[i].id == serviceId) {
+        serviceExists = true;
+        break;
+      }
+    }
+    
+    if (!serviceExists) {
+      request->send(404, "application/json", "{\"error\":\"Service not found\"}");
+      return;
+    }
+    
     // Find the event log for this service
     int eventLogIndex = getEventLogIndex(serviceId);
     if (eventLogIndex == -1) {
-      // Return empty event log if not found
-      request->send(200, "application/json", "{\"serviceId\":\"" + serviceId + "\",\"events\":[]}");
+      // Return empty event log if not found (service exists but no events yet)
+      JsonDocument doc;
+      doc["serviceId"] = serviceId;
+      JsonArray eventsArray = doc["events"].to<JsonArray>();
+      String response;
+      serializeJson(doc, response);
+      request->send(200, "application/json", response);
       return;
     }
     
@@ -3943,7 +3971,9 @@ void recordServiceEvent(const String& serviceId, bool isUp, const String& reason
   Serial.printf("Recorded event for service '%s': %s at %lu\n", 
     serviceId.c_str(), isUp ? "UP" : "DOWN", event.timestamp);
   
-  // Save event logs to disk
+  // Save event logs to disk immediately to prevent data loss
+  // State changes are infrequent enough that flash wear is not a concern
+  // (similar to how saveHistory() is called on every check result)
   saveEventLogs();
 }
 
@@ -4010,10 +4040,12 @@ void loadEventLogs() {
     return;
   }
   
-  // Initialize all event logs
+  // Clear existing event logs only if they have data
   for (int i = 0; i < MAX_SERVICES; i++) {
-    serviceEventLogs[i].serviceId = "";
-    serviceEventLogs[i].events.clear();
+    if (serviceEventLogs[i].serviceId.length() > 0 || serviceEventLogs[i].events.size() > 0) {
+      serviceEventLogs[i].serviceId = "";
+      serviceEventLogs[i].events.clear();
+    }
   }
   
   if (!LittleFS.exists("/event_logs.json")) {
@@ -4963,7 +4995,7 @@ String getWebPage() {
             }).join('');
             
             return `
-                <div class="history-container" onclick="showEventLog('${serviceId}')" title="Click to view event log">
+                <div class="history-container" data-service-id="${serviceId}" title="Click to view event log">
                     <div class="history-graph">${bars}</div>
                     <span class="uptime-percentage">${uptimePercent}%</span>
                 </div>
@@ -5095,6 +5127,18 @@ String getWebPage() {
                 `;
             }).join('');
         }
+        
+        // Add event delegation for history clicks (XSS-safe)
+        document.addEventListener('click', function(event) {
+            const historyContainer = event.target.closest('.history-container');
+            if (historyContainer) {
+                const serviceId = historyContainer.getAttribute('data-service-id');
+                if (serviceId) {
+                    showEventLog(serviceId);
+                }
+            }
+        });
+        
         setInterval(loadServices, 5000);
         loadServices();
     </script>
