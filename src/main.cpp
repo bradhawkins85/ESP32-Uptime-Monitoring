@@ -1240,6 +1240,65 @@ void initWebServer() {
     }
   );
 
+  // Test notifications endpoint - sends test notifications to all configured channels
+  server.on("/api/test-notifications", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (!ensureAuthenticated(request)) {
+      return;
+    }
+
+    String title = "ESP32 Monitor Test";
+    String message = "This is a test notification from your ESP32 Uptime Monitor. All notification channels are working correctly.";
+    String tags = "test,monitor";
+    
+    JsonDocument doc;
+    JsonArray results = doc["results"].to<JsonArray>();
+    bool anySuccess = false;
+    bool anyFailure = false;
+    
+    // Test ntfy
+    if (isNtfyConfigured()) {
+      bool success = sendNtfyNotificationWithStatus(title, message, tags);
+      JsonObject ntfyResult = results.add<JsonObject>();
+      ntfyResult["channel"] = "ntfy";
+      ntfyResult["success"] = success;
+      if (success) anySuccess = true; else anyFailure = true;
+    }
+    
+    // Test Discord
+    if (isDiscordConfigured()) {
+      bool success = sendDiscordNotificationWithStatus(title, message);
+      JsonObject discordResult = results.add<JsonObject>();
+      discordResult["channel"] = "Discord";
+      discordResult["success"] = success;
+      if (success) anySuccess = true; else anyFailure = true;
+    }
+    
+    // Test SMTP
+    if (isSmtpConfigured()) {
+      bool success = sendSmtpNotificationWithStatus(title, message);
+      JsonObject smtpResult = results.add<JsonObject>();
+      smtpResult["channel"] = "SMTP";
+      smtpResult["success"] = success;
+      if (success) anySuccess = true; else anyFailure = true;
+    }
+    
+    // Test MeshCore
+    if (isMeshCoreConfigured()) {
+      bool success = sendMeshCoreNotificationWithStatus(title, message);
+      JsonObject meshResult = results.add<JsonObject>();
+      meshResult["channel"] = "MeshCore";
+      meshResult["success"] = success;
+      if (success) anySuccess = true; else anyFailure = true;
+    }
+    
+    doc["success"] = anySuccess;
+    doc["allSuccess"] = anySuccess && !anyFailure;
+    
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+  });
+
   // get services
   server.on("/api/services", HTTP_GET, [](AsyncWebServerRequest *request) {
     JsonDocument doc;
@@ -4653,6 +4712,7 @@ String getAdminPage() {
                 <h2 style="margin: 0; color: #1f2937;">Add New Service</h2>
                 <div class="backup-actions">
                     <a href="/update" class="btn btn-secondary" target="_blank" rel="noopener noreferrer" title="Open firmware update page">OTA Update</a>
+                    <button type="button" class="btn btn-secondary" onclick="testNotifications()">Test Notifications</button>
                     <button type="button" class="btn btn-secondary" onclick="exportServices()">Export Monitors</button>
                     <label class="btn btn-secondary" for="importFile">Import Monitors</label>
                     <input type="file" id="importFile" accept=".json" onchange="importServices(this.files[0])">
@@ -5194,6 +5254,37 @@ String getAdminPage() {
             setTimeout(() => {
                 alert.remove();
             }, 3000);
+        }
+
+        // Test notifications - send test notifications to all configured channels
+        async function testNotifications() {
+            try {
+                const response = await fetch('/api/test-notifications', {
+                    method: 'POST'
+                });
+
+                const result = await response.json();
+
+                if (response.ok && result.success) {
+                    let message = 'Test notifications sent!';
+                    if (result.results && result.results.length > 0) {
+                        const successChannels = result.results.filter(r => r.success).map(r => r.channel);
+                        const failedChannels = result.results.filter(r => !r.success).map(r => r.channel);
+                        
+                        if (successChannels.length > 0) {
+                            message = `Test sent successfully to: ${successChannels.join(', ')}`;
+                        }
+                        if (failedChannels.length > 0) {
+                            message += ` (Failed: ${failedChannels.join(', ')})`;
+                        }
+                    }
+                    showAlert(message, result.allSuccess ? 'success' : 'error');
+                } else {
+                    showAlert('Failed to send test notifications', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
         }
 
         // Export services
