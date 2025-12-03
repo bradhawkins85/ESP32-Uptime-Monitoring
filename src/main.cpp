@@ -4056,6 +4056,7 @@ String getWebPage() {
                 <thead>
                     <tr>
                         <th>Service</th>
+                        <th>Type</th>
                         <th>Status</th>
                         <th>Last Checked</th>
                     </tr>
@@ -4076,6 +4077,8 @@ String getWebPage() {
                 const response = await fetch('/api/services');
                 const data = await response.json();
                 services = data.services || [];
+                // Sort services alphabetically by name
+                services.sort((a, b) => a.name.localeCompare(b.name));
                 renderServices();
             } catch (error) {
                 console.error('Error loading services:', error);
@@ -4124,9 +4127,12 @@ String getWebPage() {
                     statusText = `PAUSED (${pauseStr})`;
                     statusClass = 'paused';
                 }
+                // Format service type for display
+                const typeDisplay = service.type.replace('_', ' ').toUpperCase();
                 return `
                     <tr>
                         <td class="service-name">${service.name}</td>
+                        <td>${typeDisplay}</td>
                         <td><span class="status-badge ${statusClass}">${statusText}</span></td>
                         <td>${uptimeStr}</td>
                     </tr>
