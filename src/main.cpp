@@ -4296,6 +4296,140 @@ String getAdminPage() {
             box-sizing: border-box;
         }
 
+        .services-table {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            margin-top: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            overflow-x: auto;
+        }
+
+        .services-table table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .services-table th {
+            background: #f9fafb;
+            padding: 12px 15px;
+            text-align: left;
+            font-weight: 600;
+            color: #374151;
+            border-bottom: 2px solid #e5e7eb;
+            font-size: 0.9em;
+        }
+
+        .services-table td {
+            padding: 12px 15px;
+            border-bottom: 1px solid #e5e7eb;
+            color: #6b7280;
+            font-size: 0.9em;
+        }
+
+        .services-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .services-table tr:hover {
+            background: #f9fafb;
+        }
+
+        .services-table .service-name-cell {
+            font-weight: 600;
+            color: #1f2937;
+        }
+
+        .services-table .status-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            font-weight: 600;
+        }
+
+        .services-table .status-badge.up {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .services-table .status-badge.down {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        .services-table .status-badge.pending {
+            background: #e0e7ff;
+            color: #3730a3;
+        }
+
+        .services-table .status-badge.paused {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .services-table .btn-group {
+            display: flex;
+            gap: 5px;
+            flex-wrap: wrap;
+        }
+
+        .services-table .btn-small {
+            padding: 6px 12px;
+            font-size: 0.85em;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-weight: 500;
+        }
+
+        .services-table .btn-edit {
+            background: #3b82f6;
+            color: white;
+        }
+
+        .services-table .btn-edit:hover {
+            background: #2563eb;
+        }
+
+        .services-table .btn-pause {
+            background: #f59e0b;
+            color: white;
+        }
+
+        .services-table .btn-pause:hover {
+            background: #d97706;
+        }
+
+        .services-table .btn-disable {
+            background: #6b7280;
+            color: white;
+        }
+
+        .services-table .btn-disable:hover {
+            background: #4b5563;
+        }
+
+        .services-table .btn-enable {
+            background: #10b981;
+            color: white;
+        }
+
+        .services-table .btn-enable:hover {
+            background: #059669;
+        }
+
+        .services-table .btn-delete {
+            background: #ef4444;
+            color: white;
+        }
+
+        .services-table .btn-delete:hover {
+            background: #dc2626;
+        }
+
+
         .services-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -4608,8 +4742,25 @@ String getAdminPage() {
             </form>
         </div>
 
-        <h2 style="color: white; margin-bottom: 20px; font-size: 1.5em;">Monitored Services</h2>
-        <div id="servicesContainer" class="services-grid"></div>
+        <div class="card">
+            <h2 style="margin: 0 0 20px 0; color: #1f2937;">Monitored Services</h2>
+            <div class="services-table">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Service Name</th>
+                            <th>Type</th>
+                            <th>Target</th>
+                            <th>Status</th>
+                            <th>Last Check</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="servicesTableBody">
+                    </tbody>
+                </table>
+            </div>
+        </div>
         <div id="emptyState" class="empty-state hidden">
             <h3>No services yet</h3>
             <p>Add your first service using the form above</p>
@@ -4759,18 +4910,17 @@ String getAdminPage() {
 
         // Render services
         function renderServices() {
-            const container = document.getElementById('servicesContainer');
+            const tbody = document.getElementById('servicesTableBody');
             const emptyState = document.getElementById('emptyState');
 
             if (services.length === 0) {
-                container.innerHTML = '';
-                emptyState.classList.remove('hidden');
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px; color: #9ca3af;">No services configured yet. Add your first service using the form above.</td></tr>';
                 return;
             }
 
             emptyState.classList.add('hidden');
 
-            container.innerHTML = services.map(service => {
+            tbody.innerHTML = services.map(service => {
                 let uptimeStr = 'Not checked yet';
 
                 if (service.secondsSinceLastCheck >= 0) {
@@ -4788,142 +4938,68 @@ String getAdminPage() {
                     }
                 }
 
-                const rearmInfo = service.rearmCount > 0 
-                    ? `${service.rearmCount} (${service.failedChecksSinceAlert} since last alert)` 
-                    : 'disabled';
-
-                // Build SNMP info section if applicable
-                let snmpInfo = '';
-                if (service.type === 'snmp_get' && service.snmpOid) {
-                    snmpInfo = `
-                        <div class="service-info">
-                            <strong>OID:</strong> ${service.snmpOid}
-                        </div>
-                        <div class="service-info">
-                            <strong>Community:</strong> ${service.snmpCommunity}
-                        </div>
-                        <div class="service-info">
-                            <strong>Check:</strong> value ${service.snmpCompareOp} ${service.snmpExpectedValue}
-                        </div>
-                    `;
-                }
-
-                // Build push info section if applicable
-                let pushInfo = '';
-                if (service.type === 'push' && service.pushToken) {
-                    const pushUrl = window.location.origin + '/api/push/' + service.pushToken;
-                    pushInfo = `
-                        <div class="service-info">
-                            <strong>Push URL:</strong> <code style="font-size: 0.85em; background: #f3f4f6; padding: 2px 6px; border-radius: 4px; word-break: break-all;">${pushUrl}</code>
-                        </div>
-                    `;
-                }
-
-                // Build URL info for http_get type
-                let urlInfo = '';
-                if (service.type === 'http_get' && service.url) {
-                    urlInfo = `
-                        <div class="service-info">
-                            <strong>URL:</strong> <span style="word-break: break-all;">${service.url}</span>
-                        </div>
-                    `;
-                }
-
-                // Build host info - not applicable for push or http_get type
-                let hostInfo = '';
-                if (service.type !== 'push' && service.type !== 'http_get') {
-                    hostInfo = `
-                        <div class="service-info">
-                            <strong>Host:</strong> ${service.host}${service.type !== 'ping' ? ':' + service.port : ''}
-                        </div>
-                    `;
-                }
-
-                // Build status info for enabled/paused state
-                let statusInfo = '';
-                if (!service.enabled) {
-                    statusInfo = '<div class="service-info" style="color: #6b7280;"><strong>Status:</strong> Disabled</div>';
+                // Determine status
+                const isPending = service.secondsSinceLastCheck < 0;
+                let statusText = service.isUp ? 'UP' : 'DOWN';
+                let statusClass = service.isUp ? 'up' : 'down';
+                
+                if (isPending) {
+                    statusText = 'PENDING';
+                    statusClass = 'pending';
+                } else if (!service.enabled) {
+                    statusText = 'DISABLED';
+                    statusClass = 'paused';
                 } else if (service.pauseRemaining > 0) {
                     const pauseMins = Math.floor(service.pauseRemaining / 60);
                     const pauseSecs = service.pauseRemaining % 60;
                     const pauseStr = pauseMins > 0 ? `${pauseMins}m ${pauseSecs}s` : `${pauseSecs}s`;
-                    statusInfo = `<div class="service-info" style="color: #f59e0b;"><strong>Status:</strong> Paused (${pauseStr} remaining)</div>`;
+                    statusText = `PAUSED (${pauseStr})`;
+                    statusClass = 'paused';
                 }
 
-                // Determine if service is pending (never checked)
-                const isPending = service.secondsSinceLastCheck < 0;
+                // Build target info based on service type
+                let target = '';
+                if (service.type === 'http_get' && service.url) {
+                    target = service.url;
+                } else if (service.type === 'push') {
+                    target = 'Push endpoint';
+                } else if (service.type === 'ping') {
+                    target = service.host;
+                } else if (service.host) {
+                    target = `${service.host}:${service.port}`;
+                }
 
-                // Determine service card class based on enabled/paused/pending state
-                let cardClass = service.isUp ? 'up' : 'down';
-                if (isPending) {
-                    cardClass = 'pending';
-                }
-                if (!service.enabled || service.pauseRemaining > 0) {
-                    cardClass = 'paused';
-                }
-
-                // Determine status text and class
-                let statusText = service.isUp ? 'UP' : 'DOWN';
-                let statusClass = service.isUp ? 'up' : 'down';
-                if (isPending) {
-                    statusText = 'PENDING';
-                    statusClass = 'pending';
-                }
+                // Build action buttons
+                const editBtn = `<button class="btn-small btn-edit" onclick="editService('${service.id}')">Edit</button>`;
+                const pauseBtn = service.pauseRemaining > 0
+                    ? `<button class="btn-small btn-pause" onclick="pauseService('${service.id}', 0)">Unpause</button>`
+                    : `<button class="btn-small btn-pause" onclick="showPauseDialog('${service.id}')">Pause</button>`;
+                const enableBtn = service.enabled
+                    ? `<button class="btn-small btn-disable" onclick="toggleService('${service.id}', false)">Disable</button>`
+                    : `<button class="btn-small btn-enable" onclick="toggleService('${service.id}', true)">Enable</button>`;
+                const deleteBtn = `<button class="btn-small btn-delete" onclick="deleteService('${service.id}')">Delete</button>`;
 
                 return `
-                    <div class="service-card ${cardClass}">
-                        <div class="service-header">
-                            <div>
-                                <div class="service-name">${service.name}</div>
-                                <div class="type-badge">${service.type.replace('_', ' ').toUpperCase()}</div>
+                    <tr>
+                        <td class="service-name-cell">${service.name}</td>
+                        <td>${service.type.replace('_', ' ').toUpperCase()}</td>
+                        <td style="word-break: break-all; max-width: 300px;">${target}</td>
+                        <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+                        <td>${uptimeStr}</td>
+                        <td>
+                            <div class="btn-group">
+                                ${editBtn}
+                                ${pauseBtn}
+                                ${enableBtn}
+                                ${deleteBtn}
                             </div>
-                            <span class="service-status ${statusClass}">
-                                ${statusText}
-                            </span>
-                        </div>
-                        ${statusInfo}
-                        ${urlInfo}
-                        ${hostInfo}
-                        ${snmpInfo}
-                        ${pushInfo}
-                        <div class="service-info">
-                            <strong>Check Interval:</strong> ${service.checkInterval}s
-                        </div>
-                        <div class="service-info">
-                            <strong>Thresholds:</strong> ${service.failThreshold} fail / ${service.passThreshold} pass
-                        </div>
-                        <div class="service-info">
-                            <strong>Re-arm Alert:</strong> ${rearmInfo}
-                        </div>
-                        <div class="service-info">
-                            <strong>Consecutive:</strong> ${service.consecutivePasses} passes / ${service.consecutiveFails} fails
-                        </div>
-                        <div class="service-info">
-                            <strong>Last Check:</strong> ${uptimeStr}
-                        </div>
-                        ${service.lastError ? `
-                        <div class="service-info" style="color: #ef4444;">
-                            <strong>Error:</strong> ${service.lastError}
-                        </div>
-                        ` : ''}
-                        <div class="service-actions">
-                            <button class="btn btn-secondary" onclick="editService('${service.id}')">Edit</button>
-                            ${service.enabled 
-                                ? `<button class="btn btn-secondary" onclick="toggleService('${service.id}', false)">Disable</button>`
-                                : `<button class="btn btn-primary" onclick="toggleService('${service.id}', true)">Enable</button>`
-                            }
-                            ${service.pauseRemaining > 0
-                                ? `<button class="btn btn-secondary" onclick="pauseService('${service.id}', 0)">Unpause</button>`
-                                : `<button class="btn btn-secondary" onclick="showPauseDialog('${service.id}')">Pause</button>`
-                            }
-                            <button class="btn btn-danger" onclick="deleteService('${service.id}')">Delete</button>
-                        </div>
-                    </div>
+                        </td>
+                    </tr>
                 `;
             }).join('');
         }
 
-        // Delete service
+                // Delete service
         async function deleteService(id) {
             if (!confirm('Are you sure you want to delete this service?')) {
                 return;
