@@ -1246,53 +1246,65 @@ void initWebServer() {
       return;
     }
 
+    // Check if any notification channels are configured
+    if (!isNtfyConfigured() && !isDiscordConfigured() && !isSmtpConfigured() && !isMeshCoreConfigured()) {
+      request->send(400, "application/json", "{\"success\":false,\"error\":\"No notification channels configured\"}");
+      return;
+    }
+
     String title = "ESP32 Monitor Test";
     String message = "This is a test notification from your ESP32 Uptime Monitor. All notification channels are working correctly.";
     String tags = "test,monitor";
     
     JsonDocument doc;
     JsonArray results = doc["results"].to<JsonArray>();
-    bool anySuccess = false;
-    bool anyFailure = false;
+    int successCount = 0;
+    int totalCount = 0;
     
     // Test ntfy
     if (isNtfyConfigured()) {
+      totalCount++;
       bool success = sendNtfyNotificationWithStatus(title, message, tags);
       JsonObject ntfyResult = results.add<JsonObject>();
       ntfyResult["channel"] = "ntfy";
       ntfyResult["success"] = success;
-      if (success) anySuccess = true; else anyFailure = true;
+      if (success) successCount++;
     }
     
     // Test Discord
     if (isDiscordConfigured()) {
+      totalCount++;
       bool success = sendDiscordNotificationWithStatus(title, message);
       JsonObject discordResult = results.add<JsonObject>();
       discordResult["channel"] = "Discord";
       discordResult["success"] = success;
-      if (success) anySuccess = true; else anyFailure = true;
+      if (success) successCount++;
     }
     
     // Test SMTP
     if (isSmtpConfigured()) {
+      totalCount++;
       bool success = sendSmtpNotificationWithStatus(title, message);
       JsonObject smtpResult = results.add<JsonObject>();
       smtpResult["channel"] = "SMTP";
       smtpResult["success"] = success;
-      if (success) anySuccess = true; else anyFailure = true;
+      if (success) successCount++;
     }
     
     // Test MeshCore
     if (isMeshCoreConfigured()) {
+      totalCount++;
       bool success = sendMeshCoreNotificationWithStatus(title, message);
       JsonObject meshResult = results.add<JsonObject>();
       meshResult["channel"] = "MeshCore";
       meshResult["success"] = success;
-      if (success) anySuccess = true; else anyFailure = true;
+      if (success) successCount++;
     }
     
-    doc["success"] = anySuccess;
-    doc["allSuccess"] = anySuccess && !anyFailure;
+    doc["success"] = (successCount > 0);
+    doc["allSuccess"] = (successCount == totalCount);
+    doc["successCount"] = successCount;
+    doc["totalCount"] = totalCount;
     
     String response;
     serializeJson(doc, response);
@@ -5279,6 +5291,8 @@ String getAdminPage() {
                         }
                     }
                     showAlert(message, result.allSuccess ? 'success' : 'error');
+                } else if (result.error) {
+                    showAlert(result.error, 'error');
                 } else {
                     showAlert('Failed to send test notifications', 'error');
                 }
