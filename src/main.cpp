@@ -2652,6 +2652,8 @@ void sendBootNotification() {
   String message = "Device has booted and is now monitoring services.";
   message += " IP: " + WiFi.localIP().toString();
 
+  bool meshQueued = false;
+
   if (isNtfyConfigured()) {
     sendNtfyNotification(title, message, "rocket,monitor");
   }
@@ -2676,10 +2678,15 @@ void sendBootNotification() {
     pendingMeshTitle = title;
     pendingMeshMessage = message;
     pendingMeshNotification = true;
+    meshQueued = true;
 #endif
   }
 
-  Serial.println("Boot notification sent");
+  if (meshQueued) {
+    Serial.println("Boot notification sent/queued");
+  } else {
+    Serial.println("Boot notification sent");
+  }
 }
 
 // Notification functions that return success status for queue management
