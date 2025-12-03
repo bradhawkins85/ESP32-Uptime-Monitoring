@@ -533,9 +533,10 @@ bool sendLoRaChannelMessage(const String& message) {
 // Used to detect if time has been properly synchronized via NTP
 const time_t MIN_VALID_TIMESTAMP = 1609459200;
 
-// Pending MeshCore notification - used to defer BLE operations from HTTP handlers
-// This prevents task watchdog timeouts by allowing the async web server to complete
-// HTTP response delivery before WiFi is disconnected for BLE operations.
+// Pending MeshCore notification - used to defer BLE operations from HTTP handlers and boot
+// This prevents task watchdog timeouts by:
+// 1. Allowing the async web server to complete HTTP response delivery before WiFi disconnects
+// 2. Deferring boot notifications until after setup() completes to avoid watchdog timeouts
 volatile bool pendingMeshNotification = false;
 String pendingMeshTitle = "";
 String pendingMeshMessage = "";
@@ -2664,7 +2665,18 @@ void sendBootNotification() {
   }
 
   if (isMeshCoreConfigured()) {
+#ifdef HAS_LORA_RADIO
+    // LoRa mode: Send directly - no WiFi/BLE coexistence issues
     sendMeshCoreNotification(title, message);
+#else
+    // BLE mode: Queue the notification to be sent after setup() completes
+    // This prevents watchdog timeouts during boot by deferring the BLE operation
+    // to the main loop where it can be handled safely without blocking setup()
+    Serial.println("MeshCore boot notification queued (BLE mode)");
+    pendingMeshTitle = title;
+    pendingMeshMessage = message;
+    pendingMeshNotification = true;
+#endif
   }
 
   Serial.println("Boot notification sent");
