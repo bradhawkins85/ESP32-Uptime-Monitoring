@@ -1456,10 +1456,6 @@ void initWebServer() {
       if (!ensureAuthenticated(request)) {
         return;
       }
-      if (serviceCount >= MAX_SERVICES) {
-        request->send(400, "application/json", "{\"error\":\"Maximum services reached\"}");
-        return;
-      }
 
       JsonDocument doc;
       DeserializationError error = deserializeJson(doc, data, len);
@@ -1469,8 +1465,66 @@ void initWebServer() {
         return;
       }
 
+      // Check if this is an edit (ID provided) or a new service
+      String providedId = doc["id"] | "";
+      bool isEdit = (providedId.length() > 0);
+      int editIndex = -1;
+
+      if (isEdit) {
+        // Find the existing service to edit
+        for (int i = 0; i < serviceCount; i++) {
+          if (services[i].id == providedId) {
+            editIndex = i;
+            break;
+          }
+        }
+        if (editIndex == -1) {
+          request->send(404, "application/json", "{\"error\":\"Service not found for editing\"}");
+          return;
+        }
+      } else {
+        // Adding a new service - check if we have space
+        if (serviceCount >= MAX_SERVICES) {
+          request->send(400, "application/json", "{\"error\":\"Maximum services reached\"}");
+          return;
+        }
+      }
+
       Service newService;
-      newService.id = generateServiceId();
+      
+      // Set ID: use provided ID for edits, generate new ID for additions
+      if (isEdit) {
+        newService.id = providedId;
+        // Preserve state from existing service
+        newService.consecutivePasses = services[editIndex].consecutivePasses;
+        newService.consecutiveFails = services[editIndex].consecutiveFails;
+        newService.failedChecksSinceAlert = services[editIndex].failedChecksSinceAlert;
+        newService.isUp = services[editIndex].isUp;
+        newService.hasBeenUp = services[editIndex].hasBeenUp;
+        newService.lastCheck = services[editIndex].lastCheck;
+        newService.lastUptime = services[editIndex].lastUptime;
+        newService.lastError = services[editIndex].lastError;
+        newService.secondsSinceLastCheck = services[editIndex].secondsSinceLastCheck;
+        newService.lastPush = services[editIndex].lastPush;
+        newService.enabled = services[editIndex].enabled;
+        newService.pauseUntil = services[editIndex].pauseUntil;
+      } else {
+        newService.id = generateServiceId();
+        // Initialize state for new service
+        newService.consecutivePasses = 0;
+        newService.consecutiveFails = 0;
+        newService.failedChecksSinceAlert = 0;
+        newService.isUp = false;
+        newService.hasBeenUp = false;
+        newService.lastCheck = 0;
+        newService.lastUptime = 0;
+        newService.lastError = "";
+        newService.secondsSinceLastCheck = -1;
+        newService.lastPush = 0;
+        newService.enabled = true;
+        newService.pauseUntil = 0;
+      }
+      
       newService.name = doc["name"].as<String>();
 
       String typeStr = doc["type"].as<String>();
@@ -1527,22 +1581,19 @@ void initWebServer() {
       } else {
         newService.pushToken = "";
       }
-      newService.lastPush = 0;
 
-      newService.consecutivePasses = 0;
-      newService.consecutiveFails = 0;
-      newService.failedChecksSinceAlert = 0;
-      newService.isUp = false;
-      newService.hasBeenUp = false;
-      newService.lastCheck = 0;
-      newService.lastUptime = 0;
-      newService.lastError = "";
-      newService.secondsSinceLastCheck = -1;
-      // Enable/disable and pause fields
-      newService.enabled = true;
-      newService.pauseUntil = 0;
-
-      services[serviceCount++] = newService;
+      // Store the service (either update existing or add new)
+      if (isEdit) {
+        services[editIndex] = newService;
+        Serial.printf("Updated service: %s (ID: %s)\n", newService.name.c_str(), newService.id.c_str());
+      } else {
+        services[serviceCount++] = newService;
+        // Initialize history and event log for new service
+        initServiceHistory(newService.id);
+        initServiceEventLog(newService.id);
+        Serial.printf("Added new service: %s (ID: %s)\n", newService.name.c_str(), newService.id.c_str());
+      }
+      
       saveServices();
 
       JsonDocument response;
@@ -5777,6 +5828,7 @@ String getAdminPage() {
 
     <script>
         let services = [];
+        let editingServiceId = null;  // Preserve service ID when editing
         let editingPushToken = null;  // Preserve pushToken when editing PUSH services
 
         // Update form fields based on service type
@@ -5878,6 +5930,11 @@ String getAdminPage() {
                 snmpExpectedValue: document.getElementById('snmpExpectedValue').value
             };
 
+            // Preserve service ID when editing to maintain history/events
+            if (editingServiceId) {
+                data.id = editingServiceId;
+            }
+
             // Preserve pushToken when editing a PUSH service
             if (editingPushToken && data.type === 'push') {
                 data.pushToken = editingPushToken;
@@ -5893,6 +5950,7 @@ String getAdminPage() {
                 if (response.ok) {
                     showAlert('Service added successfully!', 'success');
                     this.reset();
+                    editingServiceId = null;  // Clear the stored service ID
                     editingPushToken = null;  // Clear the stored pushToken
                     document.getElementById('serviceType').dispatchEvent(new Event('change'));
                     loadServices();
@@ -6037,10 +6095,13 @@ String getAdminPage() {
                 return;
             }
 
-            // Confirm before editing (since the old service will be deleted)
+            // Confirm before editing
             if (!confirm('Edit this service? The current configuration will be loaded into the form for modification.')) {
                 return;
             }
+
+            // Preserve service ID to maintain history and events
+            editingServiceId = id;
 
             // Preserve pushToken for PUSH services so URL doesn't change
             if (service.type === 'push' && service.pushToken) {
@@ -6072,23 +6133,7 @@ String getAdminPage() {
             // Scroll to form
             document.getElementById('addServiceForm').scrollIntoView({ behavior: 'smooth' });
 
-            // Delete the old service
-            try {
-                const response = await fetch(`/api/services/${id}`, {
-                    method: 'DELETE'
-                });
-
-                if (response.ok) {
-                    showAlert('Service loaded for editing. Make your changes and click "Add Service" to save.', 'success');
-                    loadServices();
-                } else {
-                    showAlert('Failed to load service for editing', 'error');
-                    editingPushToken = null;  // Clear on failure
-                }
-            } catch (error) {
-                showAlert('Error: ' + error.message, 'error');
-                editingPushToken = null;  // Clear on failure
-            }
+            showAlert('Service loaded for editing. Make your changes and click "Add Service" to save.', 'success');
         }
 
         // Toggle service enabled/disabled
