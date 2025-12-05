@@ -2007,16 +2007,18 @@ void initWebServer() {
   });
 
   // Clear history for a specific service
-  server.on("^\\/api\\/services\\/([^\\/]+)\\/clear-history$", HTTP_POST, [](AsyncWebServerRequest *request) {
+  server.on("/api/clear-history", HTTP_POST, [](AsyncWebServerRequest *request) {
     if (!ensureAuthenticated(request)) {
       return;
     }
     
-    String path = request->url();
-    // Extract service ID from path like /api/services/{id}/clear-history
-    int lastSlash = path.lastIndexOf('/');
-    int secondLastSlash = path.lastIndexOf('/', lastSlash - 1);
-    String serviceId = path.substring(secondLastSlash + 1, lastSlash);
+    // Get service ID from query parameter
+    if (!request->hasParam("id")) {
+      request->send(400, "application/json", "{\"error\":\"Missing service ID\"}");
+      return;
+    }
+    
+    String serviceId = request->getParam("id")->value();
     
     if (serviceId.length() == 0) {
       request->send(400, "application/json", "{\"error\":\"Missing service ID\"}");
@@ -6281,7 +6283,7 @@ String getAdminPage() {
             }
 
             try {
-                const response = await fetch(`/api/services/${id}/clear-history`, {
+                const response = await fetch(`/api/clear-history?id=${id}`, {
                     method: 'POST'
                 });
 
