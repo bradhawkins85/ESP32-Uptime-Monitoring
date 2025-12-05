@@ -2042,8 +2042,26 @@ void initWebServer() {
       return;
     }
     
-    // Clear the history for this service
-    removeServiceHistory(serviceId);
+    // Rebuild a fresh, empty history entry so new checks start accumulating immediately
+    int historyIndex = getHistoryIndex(serviceId);
+    if (historyIndex == -1) {
+      initServiceHistory(serviceId);
+      historyIndex = getHistoryIndex(serviceId);
+    }
+
+    if (historyIndex != -1) {
+      serviceHistories[historyIndex].hourlyUptime.clear();
+      serviceHistories[historyIndex].checksThisHour = 0;
+      serviceHistories[historyIndex].passesThisHour = 0;
+
+      // Anchor the new history window to the current hour
+      time_t now = time(nullptr);
+      unsigned long currentHour = (now / 3600) * 3600;
+      serviceHistories[historyIndex].currentHourStart = currentHour;
+      serviceHistories[historyIndex].firstHourTimestamp = currentHour;
+
+      saveHistory();
+    }
     
     JsonDocument response;
     response["success"] = true;
