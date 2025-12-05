@@ -772,6 +772,7 @@ bool checkPort(Service& service);
 bool checkPush(Service& service);
 int matchesRegex(const String& text, const String& pattern);
 String getWebPage();
+String getKioskPage();
 String getAdminPage();
 String getServiceTypeString(ServiceType type);
 String getSnmpCompareOpString(SnmpCompareOp op);
@@ -1249,6 +1250,10 @@ void initWebServer() {
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
     request->send(200, "text/html", getWebPage());
+  });
+
+  server.on("/kiosk", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(200, "text/html", getKioskPage());
   });
 
   server.on("/admin", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -5386,6 +5391,199 @@ String getWebPage() {
         });
         
         setInterval(loadServices, 5000);
+        loadServices();
+    </script>
+</body>
+</html>)rawliteral";
+}
+
+String getKioskPage() {
+  // Table-only view: same styling as main but no header/build text; centered both axes
+  return R"rawliteral(<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 Uptime Monitor - Kiosk</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .container {
+            max-width: 1200px;
+            width: 100%;
+        }
+        .status-table {
+            background: white; border-radius: 12px; padding: 25px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow-x: auto;
+        }
+        table { width: 100%; border-collapse: collapse; }
+        th {
+            background: #f9fafb; padding: 15px; text-align: left; font-weight: 600;
+            color: #374151; border-bottom: 2px solid #e5e7eb;
+        }
+        td { padding: 15px; border-bottom: 1px solid #e5e7eb; color: #6b7280; }
+        tr:last-child td { border-bottom: none; }
+        tr:hover { background: #f9fafb; }
+        .service-name { font-weight: 600; color: #1f2937; }
+        .status-badge {
+            display: inline-block; padding: 4px 12px; border-radius: 20px;
+            font-size: 0.85em; font-weight: 600;
+        }
+        .status-badge.up { background: #d1fae5; color: #065f46; }
+        .status-badge.down { background: #fee2e2; color: #991b1b; }
+        .status-badge.pending { background: #e0e7ff; color: #3730a3; }
+        .status-badge.paused { background: #fef3c7; color: #92400e; }
+        .empty-state { text-align: center; padding: 40px 20px; color: #9ca3af; }
+        .hidden { display: none; }
+        .history-container { display: flex; align-items: center; gap: 8px; }
+        .history-graph { display: flex; gap: 2px; align-items: center; }
+        .history-bar {
+            width: 4px; height: 20px; border-radius: 2px;
+            background: #e5e7eb; transition: background 0.3s;
+        }
+        .history-bar.up-100 { background: #10b981; }
+        .history-bar.up-75 { background: #34d399; }
+        .history-bar.up-50 { background: #fbbf24; }
+        .history-bar.up-25 { background: #f87171; }
+        .history-bar.up-0 { background: #ef4444; }
+        .uptime-percentage { font-size: 0.85em; font-weight: 600; color: #10b981; min-width: 45px; text-align: right; }
+        .history-container { cursor: default; }
+        @media (max-width: 768px) {
+            .status-table { padding: 15px; }
+            th, td { padding: 10px 8px; font-size: 0.9em; }
+            .history-bar { width: 3px; height: 16px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="status-table" id="statusTable">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Service</th>
+                        <th>Type</th>
+                        <th>Status</th>
+                        <th>Uptime (30d)</th>
+                        <th>Last Checked</th>
+                    </tr>
+                </thead>
+                <tbody id="servicesTableBody"></tbody>
+            </table>
+        </div>
+        <div id="emptyState" class="empty-state hidden">
+            <h3>No services configured</h3>
+        </div>
+    </div>
+
+    <script>
+        let services = [];
+        let serviceHistories = {};
+
+        async function loadServices() {
+            try {
+                const response = await fetch('/api/services');
+                const data = await response.json();
+                services = data.services || [];
+                services.sort((a, b) => a.name.localeCompare(b.name));
+                await loadHistories();
+                renderServices();
+            } catch (error) {
+                console.error('Error loading services:', error);
+            }
+        }
+
+        async function loadHistories() {
+            serviceHistories = {};
+            for (const service of services) {
+                try {
+                    const response = await fetch(`/api/history/${service.id}`);
+                    if (response.ok) {
+                        const history = await response.json();
+                        serviceHistories[service.id] = history;
+                    }
+                } catch (error) {
+                    console.error('Error loading history for', service.id, error);
+                }
+            }
+        }
+
+        function getLastCheckedText(secondsSinceLastCheck) {
+            if (secondsSinceLastCheck < 0) return 'Not checked yet';
+            if (secondsSinceLastCheck < 60) return `${secondsSinceLastCheck}s ago`;
+            if (secondsSinceLastCheck < 3600) {
+                const minutes = Math.floor(secondsSinceLastCheck / 60);
+                const secs = secondsSinceLastCheck % 60;
+                return `${minutes}m ${secs}s ago`;
+            }
+            const hours = Math.floor(secondsSinceLastCheck / 3600);
+            const minutes = Math.floor((secondsSinceLastCheck % 3600) / 60);
+            return `${hours}h ${minutes}m ago`;
+        }
+
+        function renderHistoryGraph(serviceId) {
+            const history = serviceHistories[serviceId];
+            if (!history || !history.hourlyUptime || history.hourlyUptime.length === 0) {
+                return '<div class="history-container"><span class="uptime-percentage">N/A</span></div>';
+            }
+            const DISPLAY_HOURS = 90;
+            const recentHistory = history.hourlyUptime.slice(-DISPLAY_HOURS);
+            const bars = recentHistory.map(uptime => {
+                let cls = 'up-0';
+                if (uptime >= 100) cls = 'up-100';
+                else if (uptime >= 75) cls = 'up-75';
+                else if (uptime >= 50) cls = 'up-50';
+                else if (uptime >= 25) cls = 'up-25';
+                return `<div class="history-bar ${cls}"></div>`;
+            }).join('');
+            const avg = history.uptimePercentage || 0;
+            return `<div class="history-container"><div class="history-graph">${bars}</div><span class="uptime-percentage">${avg.toFixed(0)}%</span></div>`;
+        }
+
+        function renderServices() {
+            const tbody = document.getElementById('servicesTableBody');
+            const table = document.getElementById('statusTable');
+            const emptyState = document.getElementById('emptyState');
+
+            if (services.length === 0) {
+                table.classList.add('hidden');
+                emptyState.classList.remove('hidden');
+                return;
+            }
+
+            table.classList.remove('hidden');
+            emptyState.classList.add('hidden');
+
+            tbody.innerHTML = services.map(service => {
+                const lastChecked = getLastCheckedText(service.secondsSinceLastCheck);
+                const isPending = service.secondsSinceLastCheck < 0;
+                let statusText = service.isUp ? 'UP' : 'DOWN';
+                let statusClass = service.isUp ? 'up' : 'down';
+                if (isPending) { statusText = 'PENDING'; statusClass = 'pending'; }
+                else if (!service.enabled) { statusText = 'DISABLED'; statusClass = 'paused'; }
+                else if (service.pauseRemaining > 0) { statusText = 'PAUSED'; statusClass = 'paused'; }
+
+                return `
+                    <tr>
+                        <td class="service-name">${service.name}</td>
+                        <td>${service.type.replace('_', ' ').toUpperCase()}</td>
+                        <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+                        <td>${renderHistoryGraph(service.id)}</td>
+                        <td>${lastChecked}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        setInterval(loadServices, 15000);
         loadServices();
     </script>
 </body>
