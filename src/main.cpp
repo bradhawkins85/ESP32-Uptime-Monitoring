@@ -585,6 +585,9 @@ int getMeshProtocolState() {
 #endif
 }
 
+// Mutex for protecting services array access
+SemaphoreHandle_t servicesMutex = NULL;
+
 // Service types
 // Right now the behavior for each is rudimentary
 // However, you can use this to expand and add services with more complex checks
@@ -807,6 +810,10 @@ void removeQueuedNotification(int index);
 
 void setup() {
   Serial.begin(115200);
+  
+  // Initialize services mutex
+  servicesMutex = xSemaphoreCreateMutex();
+
   // Simple delay for serial initialization - matches working ESP32-4848S040 implementation
   // from ESP32-Uptime-Monitoring-Touch. The previous complex !Serial wait loop was causing
   // issues with serial output on this board.
@@ -1659,65 +1666,74 @@ void initWebServer() {
 
       // Find the service
       int foundIndex = -1;
-      for (int i = 0; i < serviceCount; i++) {
-        if (services[i].id == serviceId) {
-          foundIndex = i;
-          break;
-        }
-      }
-
-      if (foundIndex == -1) {
-        request->send(404, "application/json", "{\"error\":\"Service not found\"}");
-        return;
-      }
-
-      JsonDocument doc;
-      if (deserializeJson(doc, data, len) != DeserializationError::Ok) {
-        request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
-        return;
-      }
-
-      // Update enabled status if provided
-      if (!doc["enabled"].isNull()) {
-        services[foundIndex].enabled = doc["enabled"].as<bool>();
-        Serial.printf("Service '%s' enabled set to %s\n", 
-                      services[foundIndex].name.c_str(),
-                      services[foundIndex].enabled ? "true" : "false");
-      }
-
-      // Update pause duration if provided (in seconds, 0 to unpause)
-      if (!doc["pauseDuration"].isNull()) {
-        int pauseDuration = doc["pauseDuration"].as<int>();
-        if (pauseDuration > 0) {
-          // Limit pause duration to prevent overflow (MAX_PAUSE_DURATION_SECONDS * 1000 fits in unsigned long)
-          if (pauseDuration > MAX_PAUSE_DURATION_SECONDS) {
-            pauseDuration = MAX_PAUSE_DURATION_SECONDS;
+      if (xSemaphoreTake(servicesMutex, portMAX_DELAY)) {
+        for (int i = 0; i < serviceCount; i++) {
+          if (services[i].id == serviceId) {
+            foundIndex = i;
+            break;
           }
-          // Calculate pause end time - safe because pauseDuration is limited
-          unsigned long durationMs = static_cast<unsigned long>(pauseDuration) * 1000UL;
-          services[foundIndex].pauseUntil = millis() + durationMs;
-          Serial.printf("Service '%s' paused for %d seconds\n", 
-                        services[foundIndex].name.c_str(), pauseDuration);
-        } else {
-          services[foundIndex].pauseUntil = 0;
-          Serial.printf("Service '%s' unpaused\n", services[foundIndex].name.c_str());
         }
+
+        if (foundIndex == -1) {
+          xSemaphoreGive(servicesMutex);
+          request->send(404, "application/json", "{\"error\":\"Service not found\"}");
+          return;
+        }
+
+        JsonDocument doc;
+        if (deserializeJson(doc, data, len) != DeserializationError::Ok) {
+          xSemaphoreGive(servicesMutex);
+          request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+          return;
+        }
+
+        // Update enabled status if provided
+        if (!doc["enabled"].isNull()) {
+          services[foundIndex].enabled = doc["enabled"].as<bool>();
+          Serial.printf("Service '%s' enabled set to %s\n", 
+                        services[foundIndex].name.c_str(),
+                        services[foundIndex].enabled ? "true" : "false");
+        }
+
+        // Update pause duration if provided (in seconds, 0 to unpause)
+        if (!doc["pauseDuration"].isNull()) {
+          int pauseDuration = doc["pauseDuration"].as<int>();
+          if (pauseDuration > 0) {
+            // Limit pause duration to prevent overflow (MAX_PAUSE_DURATION_SECONDS * 1000 fits in unsigned long)
+            if (pauseDuration > MAX_PAUSE_DURATION_SECONDS) {
+              pauseDuration = MAX_PAUSE_DURATION_SECONDS;
+            }
+            // Calculate pause end time - safe because pauseDuration is limited
+            unsigned long durationMs = static_cast<unsigned long>(pauseDuration) * 1000UL;
+            services[foundIndex].pauseUntil = millis() + durationMs;
+            Serial.printf("Service '%s' paused for %d seconds\n", 
+                          services[foundIndex].name.c_str(), pauseDuration);
+          } else {
+            services[foundIndex].pauseUntil = 0;
+            Serial.printf("Service '%s' unpaused\n", services[foundIndex].name.c_str());
+          }
+        }
+
+        saveServices();
+
+        // Build response with current state (rollover-safe)
+        unsigned long currentTimeMs = millis();
+        JsonDocument response;
+        response["success"] = true;
+        response["id"] = services[foundIndex].id;
+        response["enabled"] = services[foundIndex].enabled;
+        response["pauseUntil"] = services[foundIndex].pauseUntil;
+        response["pauseRemaining"] = getPauseRemainingMs(services[foundIndex].pauseUntil, currentTimeMs) / 1000;
+
+        String responseStr;
+        serializeJson(response, responseStr);
+        request->send(200, "application/json", responseStr);
+        
+        xSemaphoreGive(servicesMutex);
+      } else {
+        request->send(500, "application/json", "{\"error\":\"Internal Server Error\"}");
+        return;
       }
-
-      saveServices();
-
-      // Build response with current state (rollover-safe)
-      unsigned long currentTimeMs = millis();
-      JsonDocument response;
-      response["success"] = true;
-      response["id"] = services[foundIndex].id;
-      response["enabled"] = services[foundIndex].enabled;
-      response["pauseUntil"] = services[foundIndex].pauseUntil;
-      response["pauseRemaining"] = getPauseRemainingMs(services[foundIndex].pauseUntil, currentTimeMs) / 1000;
-
-      String responseStr;
-      serializeJson(response, responseStr);
-      request->send(200, "application/json", responseStr);
     }
   );
 
@@ -1726,26 +1742,32 @@ void initWebServer() {
     JsonDocument doc;
     JsonArray array = doc["services"].to<JsonArray>();
 
-    for (int i = 0; i < serviceCount; i++) {
-      JsonObject obj = array.add<JsonObject>();
-      obj["name"] = services[i].name;
-      obj["type"] = getServiceTypeString(services[i].type);
-      obj["host"] = services[i].host;
-      obj["port"] = services[i].port;
-      obj["path"] = services[i].path;
-      obj["url"] = services[i].url;
-      obj["expectedResponse"] = services[i].expectedResponse;
-      obj["checkInterval"] = services[i].checkInterval;
-      obj["passThreshold"] = services[i].passThreshold;
-      obj["failThreshold"] = services[i].failThreshold;
-      obj["rearmCount"] = services[i].rearmCount;
-      // SNMP-specific fields
-      obj["snmpOid"] = services[i].snmpOid;
-      obj["snmpCommunity"] = services[i].snmpCommunity;
-      obj["snmpCompareOp"] = getSnmpCompareOpString(services[i].snmpCompareOp);
-      obj["snmpExpectedValue"] = services[i].snmpExpectedValue;
-      // Push-specific fields (token is regenerated on import for security)
-      // We don't export the token, just the type
+    if (xSemaphoreTake(servicesMutex, portMAX_DELAY)) {
+      for (int i = 0; i < serviceCount; i++) {
+        JsonObject obj = array.add<JsonObject>();
+        obj["name"] = services[i].name;
+        obj["type"] = getServiceTypeString(services[i].type);
+        obj["host"] = services[i].host;
+        obj["port"] = services[i].port;
+        obj["path"] = services[i].path;
+        obj["url"] = services[i].url;
+        obj["expectedResponse"] = services[i].expectedResponse;
+        obj["checkInterval"] = services[i].checkInterval;
+        obj["passThreshold"] = services[i].passThreshold;
+        obj["failThreshold"] = services[i].failThreshold;
+        obj["rearmCount"] = services[i].rearmCount;
+        // SNMP-specific fields
+        obj["snmpOid"] = services[i].snmpOid;
+        obj["snmpCommunity"] = services[i].snmpCommunity;
+        obj["snmpCompareOp"] = getSnmpCompareOpString(services[i].snmpCompareOp);
+        obj["snmpExpectedValue"] = services[i].snmpExpectedValue;
+        // Push-specific fields (token is regenerated on import for security)
+        // We don't export the token, just the type
+      }
+      xSemaphoreGive(servicesMutex);
+    } else {
+      request->send(500, "application/json", "{\"error\":\"Internal Server Error\"}");
+      return;
     }
 
     String response;
@@ -1785,7 +1807,8 @@ void initWebServer() {
       int importedCount = 0;
       int skippedCount = 0;
 
-      for (JsonObject obj : array) {
+      if (xSemaphoreTake(servicesMutex, portMAX_DELAY)) {
+        for (JsonObject obj : array) {
         if (serviceCount >= MAX_SERVICES) {
           skippedCount++;
           continue;
@@ -1889,6 +1912,11 @@ void initWebServer() {
       }
 
       saveServices();
+      xSemaphoreGive(servicesMutex);
+    } else {
+      request->send(500, "application/json", "{\"error\":\"Internal Server Error\"}");
+      return;
+    }
 
       JsonDocument response;
       response["success"] = true;
@@ -1914,49 +1942,57 @@ void initWebServer() {
     
     // Find the service with this push token
     bool found = false;
-    for (int i = 0; i < serviceCount; i++) {
-      if (services[i].type == TYPE_PUSH && services[i].pushToken == token) {
-        unsigned long now = millis();
-        services[i].lastPush = now;
-        bool wasUp = services[i].isUp;
+    if (xSemaphoreTake(servicesMutex, portMAX_DELAY)) {
+      for (int i = 0; i < serviceCount; i++) {
+        if (services[i].type == TYPE_PUSH && services[i].pushToken == token) {
+          unsigned long now = millis();
+          services[i].lastPush = now;
+          bool wasUp = services[i].isUp;
 
-        // Mark the service as passing immediately
-        services[i].lastCheck = now;
-        services[i].lastUptime = now;
-        services[i].secondsSinceLastCheck = 0;
-        services[i].consecutiveFails = 0;
-        services[i].failedChecksSinceAlert = 0;
-        services[i].lastError = "";
+          // Mark the service as passing immediately
+          services[i].lastCheck = now;
+          services[i].lastUptime = now;
+          services[i].secondsSinceLastCheck = 0;
+          services[i].consecutiveFails = 0;
+          services[i].failedChecksSinceAlert = 0;
+          services[i].lastError = "";
 
-        int requiredPasses = services[i].passThreshold >= 1 ? services[i].passThreshold : 1;
-        services[i].consecutivePasses = requiredPasses;
-        services[i].isUp = true;
+          int requiredPasses = services[i].passThreshold >= 1 ? services[i].passThreshold : 1;
+          services[i].consecutivePasses = requiredPasses;
+          services[i].isUp = true;
 
-        if (!wasUp) {
-          Serial.printf("Push service '%s' marked UP immediately\n", services[i].name.c_str());
+          if (!wasUp) {
+            Serial.printf("Push service '%s' marked UP immediately\n", services[i].name.c_str());
 
-#ifdef HAS_LCD
-          displayNeedsUpdate = true;
-#endif
+  #ifdef HAS_LCD
+            displayNeedsUpdate = true;
+  #endif
 
-          if (services[i].hasBeenUp) {
-            sendOnlineNotification(services[i]);
+            if (services[i].hasBeenUp) {
+              sendOnlineNotification(services[i]);
+            }
+            services[i].hasBeenUp = true;
           }
-          services[i].hasBeenUp = true;
+          found = true;
+          Serial.printf("Push received for service '%s'\n", services[i].name.c_str());
+          
+          JsonDocument response;
+          response["success"] = true;
+          response["service"] = services[i].name;
+          response["timestamp"] = services[i].lastPush;
+          
+          String responseStr;
+          serializeJson(response, responseStr);
+          request->send(200, "application/json", responseStr);
+          
+          xSemaphoreGive(servicesMutex);
+          return;
         }
-        found = true;
-        Serial.printf("Push received for service '%s'\n", services[i].name.c_str());
-        
-        JsonDocument response;
-        response["success"] = true;
-        response["service"] = services[i].name;
-        response["timestamp"] = services[i].lastPush;
-        
-        String responseStr;
-        serializeJson(response, responseStr);
-        request->send(200, "application/json", responseStr);
-        return;
       }
+      xSemaphoreGive(servicesMutex);
+    } else {
+      request->send(500, "application/json", "{\"error\":\"Internal Server Error\"}");
+      return;
     }
     
     if (!found) {
@@ -2139,128 +2175,162 @@ void checkServices() {
   bool anyServiceChecked = false;  // Track if any service was checked this cycle
 #endif
 
-  for (int i = 0; i < serviceCount; i++) {
-    // Skip disabled services
-    if (!services[i].enabled) {
-      continue;
-    }
+  // Iterate through services safely
+  // Since we release the mutex during checks, the array might change (though unlikely)
+  // We use an index-based approach but re-validate inside the lock
+  int i = 0;
+  while (true) {
+    Service serviceCopy;
+    bool needsCheck = false;
+    bool endOfList = false;
 
-    // Skip paused services (using rollover-safe helper function)
-    if (services[i].pauseUntil > 0) {
-      unsigned long remaining = getPauseRemainingMs(services[i].pauseUntil, currentTime);
-      if (remaining > 0) {
-        continue;  // Pause is still active
+    if (xSemaphoreTake(servicesMutex, portMAX_DELAY)) {
+      if (i >= serviceCount) {
+        endOfList = true;
+      } else {
+        // Check if service needs checking
+        if (services[i].enabled) {
+          // Check pause
+          bool isPaused = false;
+          if (services[i].pauseUntil > 0) {
+            unsigned long remaining = getPauseRemainingMs(services[i].pauseUntil, currentTime);
+            if (remaining > 0) {
+              isPaused = true;
+            } else {
+              services[i].pauseUntil = 0; // Clear expired pause
+            }
+          }
+
+          if (!isPaused && (currentTime - services[i].lastCheck >= services[i].checkInterval * 1000)) {
+            services[i].lastCheck = currentTime; // Mark as checked to avoid immediate re-check
+            serviceCopy = services[i];
+            needsCheck = true;
+          }
+        }
       }
-      // Pause has expired or rollover detected - clear it
-      services[i].pauseUntil = 0;
-    }
-
-    // Check if it's time to check this service
-    if (currentTime - services[i].lastCheck < services[i].checkInterval * 1000) {
-      continue;
-    }
-
-    services[i].lastCheck = currentTime;
-    bool wasUp = services[i].isUp;
-
-#ifdef HAS_LCD
-    anyServiceChecked = true;  // Mark that at least one service was checked
-#endif
-
-    // Perform the actual check
-    bool checkResult = false;
-    switch (services[i].type) {
-      case TYPE_HTTP_GET:
-        checkResult = checkHttpGet(services[i]);
-        break;
-      case TYPE_PING:
-        checkResult = checkPing(services[i]);
-        break;
-      case TYPE_SNMP_GET:
-        checkResult = checkSnmpGet(services[i]);
-        break;
-      case TYPE_PORT:
-        checkResult = checkPort(services[i]);
-        break;
-      case TYPE_PUSH:
-        checkResult = checkPush(services[i]);
-        break;
-    }
-
-    // Record check result in history
-    recordCheckResult(services[i].id, checkResult);
-
-    // Update consecutive counters based on check result
-    if (checkResult) {
-      services[i].consecutivePasses++;
-      services[i].consecutiveFails = 0;
-      services[i].lastUptime = currentTime;
-      services[i].lastError = "";
-      services[i].failedChecksSinceAlert = 0;  // Reset re-arm counter on success
+      xSemaphoreGive(servicesMutex);
     } else {
-      services[i].consecutiveFails++;
-      services[i].consecutivePasses = 0;
+      break; // Should not happen
     }
 
-    // Determine new state based on thresholds
-    if (!services[i].isUp && services[i].consecutivePasses >= services[i].passThreshold) {
-      // Service has passed enough times to be considered UP
-      services[i].isUp = true;
-      services[i].failedChecksSinceAlert = 0;  // Reset re-arm counter on recovery
-    } else if (services[i].isUp && services[i].consecutiveFails >= services[i].failThreshold) {
-      // Service has failed enough times to be considered DOWN
-      services[i].isUp = false;
-    }
+    if (endOfList) break;
 
-    // Log and notify on state changes
-    if (wasUp != services[i].isUp) {
-      Serial.printf("Service '%s' is now %s (after %d consecutive %s)\n",
-        services[i].name.c_str(),
-        services[i].isUp ? "UP" : "DOWN",
-        services[i].isUp ? services[i].consecutivePasses : services[i].consecutiveFails,
-        services[i].isUp ? "passes" : "fails");
+    if (needsCheck) {
+#ifdef HAS_LCD
+      anyServiceChecked = true;
+#endif
+      // Perform the actual check on the copy
+      bool checkResult = false;
+      switch (serviceCopy.type) {
+        case TYPE_HTTP_GET:
+          checkResult = checkHttpGet(serviceCopy);
+          break;
+        case TYPE_PING:
+          checkResult = checkPing(serviceCopy);
+          break;
+        case TYPE_SNMP_GET:
+          checkResult = checkSnmpGet(serviceCopy);
+          break;
+        case TYPE_PORT:
+          checkResult = checkPort(serviceCopy);
+          break;
+        case TYPE_PUSH:
+          checkResult = checkPush(serviceCopy);
+          break;
+      }
 
-      // Record the state change event
-      String reason = services[i].isUp ? 
-        String(services[i].consecutivePasses) + " consecutive passes" :
-        String(services[i].consecutiveFails) + " consecutive fails";
-      recordServiceEvent(services[i].id, services[i].isUp, reason);
+      // Update original service
+      if (xSemaphoreTake(servicesMutex, portMAX_DELAY)) {
+        // Find service by ID in case index shifted
+        int idx = -1;
+        for (int k = 0; k < serviceCount; k++) {
+          if (services[k].id == serviceCopy.id) {
+            idx = k;
+            break;
+          }
+        }
+
+        if (idx != -1) {
+          // Record check result in history (needs mutex as it accesses serviceHistories)
+          recordCheckResult(services[idx].id, checkResult);
+
+          bool wasUp = services[idx].isUp;
+
+          if (checkResult) {
+            services[idx].consecutivePasses++;
+            services[idx].consecutiveFails = 0;
+            services[idx].lastUptime = currentTime;
+            services[idx].lastError = "";
+            services[idx].failedChecksSinceAlert = 0;  // Reset re-arm counter on success
+          } else {
+            services[idx].consecutiveFails++;
+            services[idx].consecutivePasses = 0;
+            services[idx].lastError = serviceCopy.lastError; // Copy error from check
+          }
+
+          // Determine new state based on thresholds
+          if (!services[idx].isUp && services[idx].consecutivePasses >= services[idx].passThreshold) {
+            // Service has passed enough times to be considered UP
+            services[idx].isUp = true;
+            services[idx].failedChecksSinceAlert = 0;  // Reset re-arm counter on recovery
+          } else if (services[idx].isUp && services[idx].consecutiveFails >= services[idx].failThreshold) {
+            // Service has failed enough times to be considered DOWN
+            services[idx].isUp = false;
+          }
+
+          // Log and notify on state changes
+          if (wasUp != services[idx].isUp) {
+            Serial.printf("Service '%s' is now %s (after %d consecutive %s)\n",
+              services[idx].name.c_str(),
+              services[idx].isUp ? "UP" : "DOWN",
+              services[idx].isUp ? services[idx].consecutivePasses : services[idx].consecutiveFails,
+              services[idx].isUp ? "passes" : "fails");
+
+            // Record the state change event
+            String reason = services[idx].isUp ? 
+              String(services[idx].consecutivePasses) + " consecutive passes" :
+              String(services[idx].consecutiveFails) + " consecutive fails";
+            recordServiceEvent(services[idx].id, services[idx].isUp, reason);
 
 #ifdef HAS_LCD
-      // Set display update flag BEFORE notifications to ensure display refreshes
-      // even if notification operations take a long time or encounter errors
-      displayNeedsUpdate = true;
+            // Set display update flag BEFORE notifications to ensure display refreshes
+            displayNeedsUpdate = true;
 #endif
 
-      if (!services[i].isUp) {
-        sendOfflineNotification(services[i]);
-        services[i].failedChecksSinceAlert = 0;  // Reset counter after initial alert
-      } else if (services[i].hasBeenUp) {
-        // Only send online notification if service was previously UP (not initial UP after boot)
-        sendOnlineNotification(services[i]);
-      }
-      
-      // Mark that service has been UP at least once (for initial UP notification suppression)
-      if (services[i].isUp) {
-        services[i].hasBeenUp = true;
-      }
-    } else if (!services[i].isUp && !checkResult && services[i].rearmCount > 0) {
-      // Service is still DOWN and check failed - handle re-arm logic
-      services[i].failedChecksSinceAlert++;
-      if (services[i].failedChecksSinceAlert >= services[i].rearmCount) {
-        Serial.printf("Service '%s' still DOWN - re-arming alert after %d failed checks\n",
-          services[i].name.c_str(), services[i].failedChecksSinceAlert);
-        sendOfflineNotification(services[i]);
-        services[i].failedChecksSinceAlert = 0;  // Reset counter after re-arm alert
-      }
-    }
+            if (!services[idx].isUp) {
+              sendOfflineNotification(services[idx]);
+              services[idx].failedChecksSinceAlert = 0;  // Reset counter after initial alert
+            } else if (services[idx].hasBeenUp) {
+              // Only send online notification if service was previously UP (not initial UP after boot)
+              sendOnlineNotification(services[idx]);
+            }
+            
+            // Mark that service has been UP at least once (for initial UP notification suppression)
+            if (services[idx].isUp) {
+              services[idx].hasBeenUp = true;
+            }
+          } else if (!services[idx].isUp && !checkResult && services[idx].rearmCount > 0) {
+            // Service is still DOWN and check failed - handle re-arm logic
+            services[idx].failedChecksSinceAlert++;
+            if (services[idx].failedChecksSinceAlert >= services[idx].rearmCount) {
+              Serial.printf("Service '%s' still DOWN - re-arming alert after %d failed checks\n",
+                services[idx].name.c_str(), services[idx].failedChecksSinceAlert);
+              sendOfflineNotification(services[idx]);
+              services[idx].failedChecksSinceAlert = 0;  // Reset counter after re-arm alert
+            }
+          }
 
 #ifdef HAS_LCD
-    // Update display if viewing detail view and this specific service was checked
-    if (currentView == VIEW_DETAIL && i == currentServiceIndex) {
-      displayNeedsUpdate = true;
-    }
+          // Update display if viewing detail view and this specific service was checked
+          if (currentView == VIEW_DETAIL && idx == currentServiceIndex) {
+            displayNeedsUpdate = true;
+          }
 #endif
+        }
+        xSemaphoreGive(servicesMutex);
+      }
+    }
+    i++;
   }
 
 #ifdef HAS_LCD
@@ -2470,17 +2540,22 @@ bool compareSnmpValue(const String& actualValue, SnmpCompareOp op, const String&
 }
 
 bool checkSnmpGet(Service& service) {
+  // Create local copies of strings to ensure stability
+  String hostStr = service.host;
+  String communityStr = service.snmpCommunity;
+  String oidStr = service.snmpOid;
+
   // Resolve hostname to IP
   IPAddress targetIP;
-  if (!WiFi.hostByName(service.host.c_str(), targetIP)) {
+  if (!WiFi.hostByName(hostStr.c_str(), targetIP)) {
     service.lastError = "DNS resolution failed";
     return false;
   }
   
   // Create SNMP objects for this request
   WiFiUDP udp;
-  SNMPManager snmpManager(service.snmpCommunity.c_str());
-  SNMPGet snmpRequest(service.snmpCommunity.c_str(), 1);  // SNMP version 2c (0=v1, 1=v2c)
+  SNMPManager snmpManager(communityStr.c_str());
+  SNMPGet snmpRequest(communityStr.c_str(), 1);  // SNMP version 2c (0=v1, 1=v2c)
   
   // Initialize SNMP manager
   snmpManager.setUDP(&udp);
@@ -2488,7 +2563,8 @@ bool checkSnmpGet(Service& service) {
   
   // Use local variables to avoid thread safety issues
   // Use special marker values to detect if they were updated
-  char stringValue[256];
+  // Increase buffer size to prevent overflow
+  char stringValue[1024];
   char* stringValuePtr = stringValue;
   stringValue[0] = '\0';
   
@@ -2500,10 +2576,10 @@ bool checkSnmpGet(Service& service) {
   bool gotResponse = false;
   
   // Add handler for string values (covers most SNMP types including OctetString)
-  ValueCallback* stringCallback = snmpManager.addStringHandler(targetIP, service.snmpOid.c_str(), &stringValuePtr);
+  ValueCallback* stringCallback = snmpManager.addStringHandler(targetIP, oidStr.c_str(), &stringValuePtr);
   
   // Also add integer handler for numeric values
-  ValueCallback* intCallback = snmpManager.addIntegerHandler(targetIP, service.snmpOid.c_str(), &intValue);
+  ValueCallback* intCallback = snmpManager.addIntegerHandler(targetIP, oidStr.c_str(), &intValue);
   
   // Build and send SNMP request - add both callbacks
   snmpRequest.addOIDPointer(stringCallback);
