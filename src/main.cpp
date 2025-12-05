@@ -2007,7 +2007,7 @@ void initWebServer() {
   });
 
   // Clear history for a specific service
-  server.on("/api/services/*/clear-history", HTTP_POST, [](AsyncWebServerRequest *request) {
+  server.on("^\\/api\\/services\\/([^\\/]+)\\/clear-history$", HTTP_POST, [](AsyncWebServerRequest *request) {
     if (!ensureAuthenticated(request)) {
       return;
     }
