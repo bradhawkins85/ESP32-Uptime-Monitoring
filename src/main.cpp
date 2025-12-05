@@ -601,7 +601,8 @@ enum ServiceType {
   TYPE_PING,
   TYPE_SNMP_GET,
   TYPE_PORT,
-  TYPE_PUSH
+  TYPE_PUSH,
+  TYPE_UPTIME
 };
 
 // SNMP comparison operators for value checks
@@ -642,6 +643,9 @@ struct Service {
   String snmpCommunity;   // SNMP community string (default: "public")
   SnmpCompareOp snmpCompareOp;  // Comparison operator for SNMP value check
   String snmpExpectedValue;     // Expected value for comparison
+  // Uptime-specific fields
+  int uptimeThreshold;          // Uptime threshold in seconds
+  SnmpCompareOp uptimeCompareOp; // Comparison operator for uptime check
   // Push-specific fields
   String pushToken;       // Unique token for push endpoint (for TYPE_PUSH)
   unsigned long lastPush; // Timestamp of last push received (millis)
@@ -770,6 +774,7 @@ bool checkPing(Service& service);
 bool checkSnmpGet(Service& service);
 bool checkPort(Service& service);
 bool checkPush(Service& service);
+bool checkUptime(Service& service);
 int matchesRegex(const String& text, const String& pattern);
 String getWebPage();
 String getKioskPage();
@@ -1454,6 +1459,9 @@ void initWebServer() {
       obj["snmpCommunity"] = services[i].snmpCommunity;
       obj["snmpCompareOp"] = getSnmpCompareOpString(services[i].snmpCompareOp);
       obj["snmpExpectedValue"] = services[i].snmpExpectedValue;
+      // Uptime-specific fields
+      obj["uptimeThreshold"] = services[i].uptimeThreshold;
+      obj["uptimeCompareOp"] = getSnmpCompareOpString(services[i].uptimeCompareOp);
       // Push-specific fields
       obj["pushToken"] = services[i].pushToken;
       // Enable/disable and pause fields
@@ -1556,6 +1564,8 @@ void initWebServer() {
         newService.type = TYPE_PORT;
       } else if (typeStr == "push") {
         newService.type = TYPE_PUSH;
+      } else if (typeStr == "uptime") {
+        newService.type = TYPE_UPTIME;
       } else {
         request->send(400, "application/json", "{\"error\":\"Invalid service type\"}");
         return;
@@ -1586,6 +1596,11 @@ void initWebServer() {
       String compareOpStr = doc["snmpCompareOp"] | "=";
       newService.snmpCompareOp = parseSnmpCompareOp(compareOpStr);
       newService.snmpExpectedValue = doc["snmpExpectedValue"] | "";
+
+      // Uptime-specific fields
+      newService.uptimeThreshold = doc["uptimeThreshold"] | 86400;
+      String uptimeCompareOpStr = doc["uptimeCompareOp"] | ">";
+      newService.uptimeCompareOp = parseSnmpCompareOp(uptimeCompareOpStr);
 
       // Push-specific fields
       if (newService.type == TYPE_PUSH) {
@@ -2210,6 +2225,16 @@ void initWebServer() {
     request->send(200, "application/json", response);
   });
 
+  // GET /api/uptime - Return ESP32 uptime in seconds
+  server.on("/api/uptime", HTTP_GET, [](AsyncWebServerRequest *request) {
+    JsonDocument doc;
+    doc["uptime"] = millis() / 1000;
+    
+    String response;
+    serializeJson(doc, response);
+    request->send(200, "application/json", response);
+  });
+
   // Initialize ElegantOTA for firmware updates via web interface
   // Access the update page at /update
   // Use existing web authentication credentials if configured
@@ -2330,6 +2355,9 @@ void checkServices() {
           break;
         case TYPE_PUSH:
           checkResult = checkPush(serviceCopy);
+          break;
+        case TYPE_UPTIME:
+          checkResult = checkUptime(serviceCopy);
           break;
       }
       
@@ -2581,6 +2609,44 @@ bool checkPush(Service& service) {
   
   service.lastError = "No push received within interval";
   return false;
+}
+
+bool checkUptime(Service& service) {
+  // Get current uptime in seconds
+  unsigned long uptimeSeconds = millis() / 1000;
+  int threshold = service.uptimeThreshold;
+  
+  // Perform comparison based on operator
+  bool result = false;
+  switch (service.uptimeCompareOp) {
+    case SNMP_OP_EQ:
+      result = (uptimeSeconds == threshold);
+      break;
+    case SNMP_OP_NE:
+      result = (uptimeSeconds != threshold);
+      break;
+    case SNMP_OP_GT:
+      result = (uptimeSeconds > threshold);
+      break;
+    case SNMP_OP_LT:
+      result = (uptimeSeconds < threshold);
+      break;
+    case SNMP_OP_GE:
+      result = (uptimeSeconds >= threshold);
+      break;
+    case SNMP_OP_LE:
+      result = (uptimeSeconds <= threshold);
+      break;
+    default:
+      service.lastError = "Invalid comparison operator";
+      return false;
+  }
+  
+  if (!result) {
+    service.lastError = "Uptime " + String(uptimeSeconds) + "s failed threshold check";
+  }
+  
+  return result;
 }
 
 // Helper function to compare SNMP values based on operator
@@ -4348,6 +4414,7 @@ String getServiceTypeString(ServiceType type) {
     case TYPE_SNMP_GET: return "snmp_get";
     case TYPE_PORT: return "port";
     case TYPE_PUSH: return "push";
+    case TYPE_UPTIME: return "uptime";
     default: return "unknown";
   }
 }
@@ -5352,6 +5419,28 @@ String getWebPage() {
                 const isPending = service.secondsSinceLastCheck < 0;
                 let statusText = service.isUp ? 'UP' : 'DOWN';
                 let statusClass = service.isUp ? 'up' : 'down';
+                
+                // For uptime type, show actual uptime value instead of UP/DOWN
+                if (service.type === 'uptime') {
+                    const uptimeSeconds = Math.floor(Date.now() / 1000) - Math.floor((Date.now() - service.secondsSinceLastCheck * 1000) / 1000) + service.secondsSinceLastCheck;
+                    let displayUptime = uptimeSeconds;
+                    if (service.lastError && service.lastError.includes('Uptime')) {
+                        const match = service.lastError.match(/Uptime (\d+)s/);
+                        if (match) displayUptime = parseInt(match[1]);
+                    }
+                    const days = Math.floor(displayUptime / 86400);
+                    const hours = Math.floor((displayUptime % 86400) / 3600);
+                    const minutes = Math.floor((displayUptime % 3600) / 60);
+                    if (days > 0) {
+                        statusText = `${days}d ${hours}h`;
+                    } else if (hours > 0) {
+                        statusText = `${hours}h ${minutes}m`;
+                    } else {
+                        statusText = `${minutes}m`;
+                    }
+                    statusClass = service.isUp ? 'up' : 'down';
+                }
+                
                 if (isPending) {
                     statusText = 'PENDING';
                     statusClass = 'pending';
@@ -5567,6 +5656,28 @@ String getKioskPage() {
                 const isPending = service.secondsSinceLastCheck < 0;
                 let statusText = service.isUp ? 'UP' : 'DOWN';
                 let statusClass = service.isUp ? 'up' : 'down';
+                
+                // For uptime type, show actual uptime value instead of UP/DOWN
+                if (service.type === 'uptime') {
+                    const uptimeSeconds = Math.floor(Date.now() / 1000) - Math.floor((Date.now() - service.secondsSinceLastCheck * 1000) / 1000) + service.secondsSinceLastCheck;
+                    let displayUptime = uptimeSeconds;
+                    if (service.lastError && service.lastError.includes('Uptime')) {
+                        const match = service.lastError.match(/Uptime (\\d+)s/);
+                        if (match) displayUptime = parseInt(match[1]);
+                    }
+                    const days = Math.floor(displayUptime / 86400);
+                    const hours = Math.floor((displayUptime % 86400) / 3600);
+                    const minutes = Math.floor((displayUptime % 3600) / 60);
+                    if (days > 0) {
+                        statusText = `${days}d ${hours}h ${minutes}m`;
+                    } else if (hours > 0) {
+                        statusText = `${hours}h ${minutes}m`;
+                    } else {
+                        statusText = `${minutes}m`;
+                    }
+                    statusClass = service.isUp ? 'up' : 'down';
+                }
+                
                 if (isPending) { statusText = 'PENDING'; statusClass = 'pending'; }
                 else if (!service.enabled) { statusText = 'DISABLED'; statusClass = 'paused'; }
                 else if (service.pauseRemaining > 0) { statusText = 'PAUSED'; statusClass = 'paused'; }
@@ -6118,6 +6229,7 @@ String getAdminPage() {
                             <option value="snmp_get">SNMP GET</option>
                             <option value="port">Port Check</option>
                             <option value="push">Push</option>
+                            <option value="uptime">Uptime</option>
                         </select>
                     </div>
 
@@ -6200,6 +6312,25 @@ String getAdminPage() {
                     </div>
                 </div>
 
+                <div class="form-row hidden" id="uptimeGroup">
+                    <div class="form-group">
+                        <label for="uptimeCompareOp">Comparison Operator</label>
+                        <select id="uptimeCompareOp">
+                            <option value="=">=  (Equal)</option>
+                            <option value="<>"><>  (Not Equal)</option>
+                            <option value="<"><  (Less Than)</option>
+                            <option value="<="><= (Less or Equal)</option>
+                            <option value=">">  (Greater Than)</option>
+                            <option value=">=">>= (Greater or Equal)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="uptimeThreshold">Threshold (seconds)</label>
+                        <input type="number" id="uptimeThreshold" value="86400" placeholder="86400" title="Uptime threshold in seconds (e.g., 86400 = 24 hours)">
+                    </div>
+                </div>
+
                 <button type="submit" class="btn btn-primary">Add Service</button>
             </form>
         </div>
@@ -6248,6 +6379,7 @@ String getAdminPage() {
             const snmpOidGroup = document.getElementById('snmpOidGroup');
             const snmpCommunityGroup = document.getElementById('snmpCommunityGroup');
             const snmpCompareGroup = document.getElementById('snmpCompareGroup');
+            const uptimeGroup = document.getElementById('uptimeGroup');
 
             if (type === 'http_get') {
                 // HTTP GET uses URL field only
@@ -6261,6 +6393,7 @@ String getAdminPage() {
                 snmpOidGroup.classList.add('hidden');
                 snmpCommunityGroup.classList.add('hidden');
                 snmpCompareGroup.classList.add('hidden');
+                uptimeGroup.classList.add('hidden');
             } else if (type === 'push') {
                 // Push type doesn't need host/port/path/url
                 hostGroup.classList.add('hidden');
@@ -6273,6 +6406,7 @@ String getAdminPage() {
                 snmpOidGroup.classList.add('hidden');
                 snmpCommunityGroup.classList.add('hidden');
                 snmpCompareGroup.classList.add('hidden');
+                uptimeGroup.classList.add('hidden');
             } else if (type === 'ping') {
                 hostGroup.classList.remove('hidden');
                 hostInput.setAttribute('required', '');
@@ -6284,6 +6418,7 @@ String getAdminPage() {
                 snmpOidGroup.classList.add('hidden');
                 snmpCommunityGroup.classList.add('hidden');
                 snmpCompareGroup.classList.add('hidden');
+                uptimeGroup.classList.add('hidden');
             } else if (type === 'port') {
                 hostGroup.classList.remove('hidden');
                 hostInput.setAttribute('required', '');
@@ -6295,6 +6430,7 @@ String getAdminPage() {
                 snmpOidGroup.classList.add('hidden');
                 snmpCommunityGroup.classList.add('hidden');
                 snmpCompareGroup.classList.add('hidden');
+                uptimeGroup.classList.add('hidden');
                 portInput.value = 22;
             } else if (type === 'snmp_get') {
                 hostGroup.classList.remove('hidden');
@@ -6307,7 +6443,21 @@ String getAdminPage() {
                 snmpOidGroup.classList.remove('hidden');
                 snmpCommunityGroup.classList.remove('hidden');
                 snmpCompareGroup.classList.remove('hidden');
+                uptimeGroup.classList.add('hidden');
                 portInput.value = 161;
+            } else if (type === 'uptime') {
+                // Uptime type only needs threshold comparison fields
+                hostGroup.classList.add('hidden');
+                hostInput.removeAttribute('required');
+                urlGroup.classList.add('hidden');
+                urlInput.removeAttribute('required');
+                portGroup.classList.add('hidden');
+                pathGroup.classList.add('hidden');
+                responseGroup.classList.add('hidden');
+                snmpOidGroup.classList.add('hidden');
+                snmpCommunityGroup.classList.add('hidden');
+                snmpCompareGroup.classList.add('hidden');
+                uptimeGroup.classList.remove('hidden');
             }
         });
 
@@ -6330,7 +6480,9 @@ String getAdminPage() {
                 snmpOid: document.getElementById('snmpOid').value,
                 snmpCommunity: document.getElementById('snmpCommunity').value,
                 snmpCompareOp: document.getElementById('snmpCompareOp').value,
-                snmpExpectedValue: document.getElementById('snmpExpectedValue').value
+                snmpExpectedValue: document.getElementById('snmpExpectedValue').value,
+                uptimeThreshold: parseInt(document.getElementById('uptimeThreshold').value) || 86400,
+                uptimeCompareOp: document.getElementById('uptimeCompareOp').value
             };
 
             // Preserve service ID when editing to maintain history/events
@@ -6412,6 +6564,29 @@ String getAdminPage() {
                 let statusText = service.isUp ? 'UP' : 'DOWN';
                 let statusClass = service.isUp ? 'up' : 'down';
                 
+                // For uptime type, show actual uptime value instead of UP/DOWN
+                if (service.type === 'uptime') {
+                    const uptimeSeconds = Math.floor(Date.now() / 1000) - Math.floor((Date.now() - service.secondsSinceLastCheck * 1000) / 1000) + service.secondsSinceLastCheck;
+                    // Get actual uptime from lastError if available or calculate approximate
+                    let displayUptime = uptimeSeconds;
+                    if (service.lastError && service.lastError.includes('Uptime')) {
+                        const match = service.lastError.match(/Uptime (\d+)s/);
+                        if (match) displayUptime = parseInt(match[1]);
+                    }
+                    const days = Math.floor(displayUptime / 86400);
+                    const hours = Math.floor((displayUptime % 86400) / 3600);
+                    const minutes = Math.floor((displayUptime % 3600) / 60);
+                    if (days > 0) {
+                        statusText = `${days}d ${hours}h ${minutes}m`;
+                    } else if (hours > 0) {
+                        statusText = `${hours}h ${minutes}m`;
+                    } else {
+                        statusText = `${minutes}m`;
+                    }
+                    // Keep color coding based on check result
+                    statusClass = service.isUp ? 'up' : 'down';
+                }
+                
                 if (isPending) {
                     statusText = 'PENDING';
                     statusClass = 'pending';
@@ -6432,6 +6607,8 @@ String getAdminPage() {
                     target = service.url;
                 } else if (service.type === 'push') {
                     target = 'Push endpoint';
+                } else if (service.type === 'uptime') {
+                    target = `Threshold: ${service.uptimeThreshold}s`;
                 } else if (service.type === 'ping') {
                     target = service.host;
                 } else if (service.host) {
@@ -6553,6 +6730,8 @@ String getAdminPage() {
             document.getElementById('snmpCommunity').value = service.snmpCommunity || 'public';
             document.getElementById('snmpCompareOp').value = service.snmpCompareOp || '=';
             document.getElementById('snmpExpectedValue').value = service.snmpExpectedValue || '';
+            document.getElementById('uptimeThreshold').value = service.uptimeThreshold || 86400;
+            document.getElementById('uptimeCompareOp').value = service.uptimeCompareOp || '>';
 
             // Trigger change event to show/hide appropriate fields
             document.getElementById('serviceType').dispatchEvent(new Event('change'));

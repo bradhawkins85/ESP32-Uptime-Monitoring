@@ -503,7 +503,7 @@
                 ]
             },
             "defines": [
-                "BUILD_TIMESTAMP=\"2025-12-05 16:30:03\"",
+                "BUILD_TIMESTAMP=\"2025-12-05 17:32:33\"",
                 "PLATFORMIO=60118",
                 "ARDUINO_ESP32S3_DEV",
                 "ARDUINO_USB_MODE=1",
