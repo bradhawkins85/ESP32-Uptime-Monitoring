@@ -10,7 +10,7 @@
 #include <ESP32Ping.h>
 #include <mbedtls/base64.h>
 #include <WiFiUdp.h>
-#include <Arduino_SNMP_Manager.h>
+#include <SNMP.h>
 #include <regex.h>
 #include <time.h>
 #include <esp_random.h>
@@ -21,6 +21,11 @@
 #include "MeshCore.hpp"
 
 #include "config.hpp"
+
+// Build timestamp (set at compile time)
+#ifndef BUILD_TIMESTAMP
+#define BUILD_TIMESTAMP "Unknown"
+#endif
 
 // --- LCD and Touch Screen Support (Conditional) ---
 // Define HAS_LCD=1 in build flags to enable LCD/touch support
@@ -2001,6 +2006,52 @@ void initWebServer() {
     }
   });
 
+  // Clear history for a specific service
+  server.on("/api/services/*/clear-history", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (!ensureAuthenticated(request)) {
+      return;
+    }
+    
+    String path = request->url();
+    // Extract service ID from path like /api/services/{id}/clear-history
+    int lastSlash = path.lastIndexOf('/');
+    int secondLastSlash = path.lastIndexOf('/', lastSlash - 1);
+    String serviceId = path.substring(secondLastSlash + 1, lastSlash);
+    
+    if (serviceId.length() == 0) {
+      request->send(400, "application/json", "{\"error\":\"Missing service ID\"}");
+      return;
+    }
+    
+    // Verify service exists
+    bool found = false;
+    if (xSemaphoreTake(servicesMutex, portMAX_DELAY)) {
+      for (int i = 0; i < serviceCount; i++) {
+        if (services[i].id == serviceId) {
+          found = true;
+          break;
+        }
+      }
+      xSemaphoreGive(servicesMutex);
+    }
+    
+    if (!found) {
+      request->send(404, "application/json", "{\"error\":\"Service not found\"}");
+      return;
+    }
+    
+    // Clear the history for this service
+    removeServiceHistory(serviceId);
+    
+    JsonDocument response;
+    response["success"] = true;
+    response["message"] = "History cleared";
+    
+    String responseStr;
+    serializeJson(response, responseStr);
+    request->send(200, "application/json", responseStr);
+  });
+
 #ifdef HAS_LCD
   // Wake screen API endpoint - simulates a screen touch to wake the display
   server.on("/api/screen/wake", HTTP_POST, [](AsyncWebServerRequest *request) {
@@ -2205,6 +2256,21 @@ void checkServices() {
           if (!isPaused && (currentTime - services[i].lastCheck >= services[i].checkInterval * 1000)) {
             services[i].lastCheck = currentTime; // Mark as checked to avoid immediate re-check
             serviceCopy = services[i];
+            
+            // CRITICAL: Force deep copy of all String members to prevent COW (copy-on-write) issues
+            // Arduino String uses reference counting, so we must ensure independent copies
+            serviceCopy.id = String(serviceCopy.id.c_str());
+            serviceCopy.name = String(serviceCopy.name.c_str());
+            serviceCopy.host = String(serviceCopy.host.c_str());
+            serviceCopy.path = String(serviceCopy.path.c_str());
+            serviceCopy.url = String(serviceCopy.url.c_str());
+            serviceCopy.expectedResponse = String(serviceCopy.expectedResponse.c_str());
+            serviceCopy.lastError = String(serviceCopy.lastError.c_str());
+            serviceCopy.snmpOid = String(serviceCopy.snmpOid.c_str());
+            serviceCopy.snmpCommunity = String(serviceCopy.snmpCommunity.c_str());
+            serviceCopy.snmpExpectedValue = String(serviceCopy.snmpExpectedValue.c_str());
+            serviceCopy.pushToken = String(serviceCopy.pushToken.c_str());
+            
             needsCheck = true;
           }
         }
@@ -2222,6 +2288,8 @@ void checkServices() {
 #endif
       // Perform the actual check on the copy
       bool checkResult = false;
+      Serial.printf("[CHECK] %s (%s) - ", serviceCopy.name.c_str(), getServiceTypeString(serviceCopy.type).c_str());
+      
       switch (serviceCopy.type) {
         case TYPE_HTTP_GET:
           checkResult = checkHttpGet(serviceCopy);
@@ -2238,6 +2306,12 @@ void checkServices() {
         case TYPE_PUSH:
           checkResult = checkPush(serviceCopy);
           break;
+      }
+      
+      if (checkResult) {
+        Serial.println("✓ PASS");
+      } else {
+        Serial.printf("✗ FAIL: %s\n", serviceCopy.lastError.c_str());
       }
 
       // Update original service
@@ -2540,8 +2614,61 @@ bool compareSnmpValue(const String& actualValue, SnmpCompareOp op, const String&
   return false;
 }
 
+// Global variables for SNMP response handling (static to persist across calls)
+static bool s_snmpGotResponse = false;
+static String s_snmpResponseValue = "";
+
+// SNMP message callback handler
+void onSnmpMessage(const SNMP::Message *message, const IPAddress remote, const uint16_t port) {
+  if (message && message->getType() == SNMP::Type::GetResponse) {
+    SNMP::VarBindList *varbindlist = message->getVarBindList();
+    if (varbindlist && varbindlist->count() > 0) {
+      SNMP::VarBind *varbind = (*varbindlist)[0];
+      if (varbind) {
+        SNMP::Type valueType = varbind->getValue()->getType();
+        
+        // Extract value based on type
+        switch (valueType) {
+          case SNMP::Type::Integer: {
+            SNMP::IntegerBER *intVal = static_cast<SNMP::IntegerBER*>(varbind->getValue());
+            s_snmpResponseValue = String(intVal->getValue());
+            s_snmpGotResponse = true;
+            break;
+          }
+          case SNMP::Type::Counter32: {
+            SNMP::Counter32BER *counterVal = static_cast<SNMP::Counter32BER*>(varbind->getValue());
+            s_snmpResponseValue = String(counterVal->getValue());
+            s_snmpGotResponse = true;
+            break;
+          }
+          case SNMP::Type::Gauge32: {
+            SNMP::Gauge32BER *gaugeVal = static_cast<SNMP::Gauge32BER*>(varbind->getValue());
+            s_snmpResponseValue = String(gaugeVal->getValue());
+            s_snmpGotResponse = true;
+            break;
+          }
+          case SNMP::Type::TimeTicks: {
+            SNMP::TimeTicksBER *timeVal = static_cast<SNMP::TimeTicksBER*>(varbind->getValue());
+            s_snmpResponseValue = String(timeVal->getValue());
+            s_snmpGotResponse = true;
+            break;
+          }
+          case SNMP::Type::OctetString: {
+            SNMP::OctetStringBER *strVal = static_cast<SNMP::OctetStringBER*>(varbind->getValue());
+            s_snmpResponseValue = String((char*)strVal->getValue());
+            s_snmpGotResponse = true;
+            break;
+          }
+          default:
+            break;
+        }
+      }
+    }
+  }
+}
+
 bool checkSnmpGet(Service& service) {
-  // Create local copies of strings to ensure stability
+  // Using patricklaf/SNMP library with Manager class and callback pattern
   String hostStr = service.host;
   String communityStr = service.snmpCommunity;
   String oidStr = service.snmpOid;
@@ -2553,83 +2680,53 @@ bool checkSnmpGet(Service& service) {
     return false;
   }
   
-  // Create SNMP objects for this request
+  // Reset response globals
+  s_snmpGotResponse = false;
+  s_snmpResponseValue = "";
+  
+  // Create UDP socket and SNMP Manager
   WiFiUDP udp;
-  SNMPManager snmpManager(communityStr.c_str());
-  SNMPGet snmpRequest(communityStr.c_str(), 1);  // SNMP version 2c (0=v1, 1=v2c)
+  SNMP::Manager snmp;
+  snmp.onMessage(onSnmpMessage);  // Set callback handler
   
-  // Initialize SNMP manager
-  snmpManager.setUDP(&udp);
-  snmpManager.begin();
+  if (!snmp.begin(udp)) {
+    service.lastError = "Failed to initialize SNMP manager";
+    return false;
+  }
   
-  // Use local variables to avoid thread safety issues
-  // Use special marker values to detect if they were updated
-  // Increase buffer size to prevent overflow
-  char stringValue[1024];
-  char* stringValuePtr = stringValue;
-  stringValue[0] = '\0';
+  // Create SNMP GetRequest message
+  SNMP::Message *request = new SNMP::Message(SNMP::Version::V2C, communityStr.c_str(), SNMP::Type::GetRequest);
+  request->add(oidStr.c_str(), new SNMP::NullBER());  // In GetRequest, values are always NULL
   
-  // Use special marker value that's unlikely to be a real SNMP response
-  // INT32_MIN is used as a sentinel to detect if the value was updated
-  int intValue = INT32_MIN;
-  
-  String responseValue = "";
-  bool gotResponse = false;
-  
-  // Add handler for string values (covers most SNMP types including OctetString)
-  ValueCallback* stringCallback = snmpManager.addStringHandler(targetIP, oidStr.c_str(), &stringValuePtr);
-  
-  // Also add integer handler for numeric values
-  ValueCallback* intCallback = snmpManager.addIntegerHandler(targetIP, oidStr.c_str(), &intValue);
-  
-  // Build and send SNMP request - add both callbacks
-  snmpRequest.addOIDPointer(stringCallback);
-  snmpRequest.addOIDPointer(intCallback);
-  snmpRequest.setIP(WiFi.localIP());
-  snmpRequest.setUDP(&udp);
-  snmpRequest.setRequestID(random(1, 65535));
-  
-  if (!snmpRequest.sendTo(targetIP)) {
+  // Send the request
+  if (!snmp.send(request, targetIP, 161)) {  // SNMP port 161
+    delete request;
     service.lastError = "Failed to send SNMP request";
     return false;
   }
-  snmpRequest.clearOIDList();
+  
+  delete request;  // Done with request message
   
   // Wait for response with timeout (5 seconds)
+  // Call snmp.loop() to process incoming packets and trigger callback
   unsigned long startTime = millis();
   const unsigned long timeout = 5000;
   
-  while (millis() - startTime < timeout) {
-    snmpManager.loop();
-    
-    // Check if we got a string response (non-empty string)
-    if (stringValue[0] != '\0') {
-      responseValue = String(stringValue);
-      gotResponse = true;
-      break;
-    }
-    
-    // Check if we got an integer response (value changed from sentinel)
-    if (intValue != INT32_MIN) {
-      responseValue = String(intValue);
-      gotResponse = true;
-      break;
-    }
-    
-    // Yield to prevent watchdog timeout
-    vTaskDelay(pdMS_TO_TICKS(10));
+  while (millis() - startTime < timeout && !s_snmpGotResponse) {
+    snmp.loop();  // Process incoming SNMP messages
+    vTaskDelay(pdMS_TO_TICKS(10));  // Yield to prevent watchdog timeout
   }
   
-  if (!gotResponse) {
-    service.lastError = "SNMP timeout";
+  if (!s_snmpGotResponse) {
+    service.lastError = "SNMP timeout or no valid response";
     return false;
   }
   
   // Compare the received value with expected value
-  bool success = compareSnmpValue(responseValue, service.snmpCompareOp, service.snmpExpectedValue);
+  bool success = compareSnmpValue(s_snmpResponseValue, service.snmpCompareOp, service.snmpExpectedValue);
   
   if (!success) {
-    service.lastError = "Value mismatch: got '" + responseValue + "', expected " + 
+    service.lastError = "Value mismatch: got '" + s_snmpResponseValue + "', expected " + 
                         getSnmpCompareOpString(service.snmpCompareOp) + " '" + 
                         service.snmpExpectedValue + "'";
   }
@@ -5025,6 +5122,7 @@ String getWebPage() {
         <div class="header">
             <h1>ESP32 Uptime Monitor</h1>
             <p>Service Status Overview</p>
+            <p style="font-size: 0.85em; color: #999; margin-top: 5px;">Build: )rawliteral" + String(BUILD_TIMESTAMP) + R"rawliteral(</p>
         </div>
         <div class="admin-link">
             <a href="/admin">Administration Panel</a>
@@ -5555,6 +5653,15 @@ String getAdminPage() {
             background: #059669;
         }
 
+        .services-table .btn-clear {
+            background: #8b5cf6;
+            color: white;
+        }
+
+        .services-table .btn-clear:hover {
+            background: #7c3aed;
+        }
+
         .services-table .btn-delete {
             background: #ef4444;
             color: white;
@@ -5762,6 +5869,7 @@ String getAdminPage() {
         <div class="header">
             <h1>ESP32 Uptime Monitor - Admin</h1>
             <p><a href="/" style="color: white; text-decoration: underline; opacity: 0.9;">← Back to Status View</a></p>
+            <p style="font-size: 0.85em; color: rgba(255,255,255,0.7); margin-top: 5px;">Build: )rawliteral" + String(BUILD_TIMESTAMP) + R"rawliteral(</p>
         </div>
 
         <div id="alertContainer"></div>
@@ -6120,6 +6228,7 @@ String getAdminPage() {
                 const enableBtn = service.enabled
                     ? `<button class="btn-small btn-disable" onclick="toggleService('${service.id}', false)">Disable</button>`
                     : `<button class="btn-small btn-enable" onclick="toggleService('${service.id}', true)">Enable</button>`;
+                const clearBtn = `<button class="btn-small btn-clear" onclick="clearHistory('${service.id}')">Clear</button>`;
                 const deleteBtn = `<button class="btn-small btn-delete" onclick="deleteService('${service.id}')">Delete</button>`;
 
                 return `
@@ -6134,6 +6243,7 @@ String getAdminPage() {
                                 ${editBtn}
                                 ${pauseBtn}
                                 ${enableBtn}
+                                ${clearBtn}
                                 ${deleteBtn}
                             </div>
                         </td>
@@ -6158,6 +6268,28 @@ String getAdminPage() {
                     loadServices();
                 } else {
                     showAlert('Failed to delete service', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
+        }
+
+        // Clear history for a service
+        async function clearHistory(id) {
+            if (!confirm('Clear all history for this service? This will reset uptime statistics.')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/services/${id}/clear-history`, {
+                    method: 'POST'
+                });
+
+                if (response.ok) {
+                    showAlert('History cleared successfully', 'success');
+                    loadServices();
+                } else {
+                    showAlert('Failed to clear history', 'error');
                 }
             } catch (error) {
                 showAlert('Error: ' + error.message, 'error');

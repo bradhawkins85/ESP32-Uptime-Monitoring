@@ -19,7 +19,7 @@
                 "/Users/bradhawkins/Documents/GitHub/ESP32-Uptime-Monitoring/.pio/libdeps/esp32-n16r8/ElegantOTA/src",
                 "/Users/bradhawkins/.platformio/packages/framework-arduinoespressif32/libraries/Update/src",
                 "/Users/bradhawkins/.platformio/packages/framework-arduinoespressif32/libraries/LittleFS/src",
-                "/Users/bradhawkins/Documents/GitHub/ESP32-Uptime-Monitoring/.pio/libdeps/esp32-n16r8/SNMP Manager/src",
+                "/Users/bradhawkins/Documents/GitHub/ESP32-Uptime-Monitoring/.pio/libdeps/esp32-n16r8/SNMP/src",
                 "/Users/bradhawkins/Documents/GitHub/ESP32-Uptime-Monitoring/.pio/libdeps/esp32-n16r8/ESP32Ping",
                 "/Users/bradhawkins/Documents/GitHub/ESP32-Uptime-Monitoring/.pio/libdeps/esp32-n16r8/ESPAsyncWebServer@3.6.0/src",
                 "/Users/bradhawkins/Documents/GitHub/ESP32-Uptime-Monitoring/.pio/libdeps/esp32-n16r8/ArduinoJson/src",
@@ -267,7 +267,7 @@
                     "/Users/bradhawkins/Documents/GitHub/ESP32-Uptime-Monitoring/.pio/libdeps/esp32-n16r8/ElegantOTA/src",
                     "/Users/bradhawkins/.platformio/packages/framework-arduinoespressif32/libraries/Update/src",
                     "/Users/bradhawkins/.platformio/packages/framework-arduinoespressif32/libraries/LittleFS/src",
-                    "/Users/bradhawkins/Documents/GitHub/ESP32-Uptime-Monitoring/.pio/libdeps/esp32-n16r8/SNMP Manager/src",
+                    "/Users/bradhawkins/Documents/GitHub/ESP32-Uptime-Monitoring/.pio/libdeps/esp32-n16r8/SNMP/src",
                     "/Users/bradhawkins/Documents/GitHub/ESP32-Uptime-Monitoring/.pio/libdeps/esp32-n16r8/ESP32Ping",
                     "/Users/bradhawkins/Documents/GitHub/ESP32-Uptime-Monitoring/.pio/libdeps/esp32-n16r8/ESPAsyncWebServer@3.6.0/src",
                     "/Users/bradhawkins/Documents/GitHub/ESP32-Uptime-Monitoring/.pio/libdeps/esp32-n16r8/ArduinoJson/src",
@@ -503,6 +503,7 @@
                 ]
             },
             "defines": [
+                "BUILD_TIMESTAMP=\"2025-12-05 15:45:15\"",
                 "PLATFORMIO=60118",
                 "ARDUINO_ESP32S3_DEV",
                 "ARDUINO_USB_MODE=1",
