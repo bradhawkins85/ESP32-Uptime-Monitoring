@@ -771,6 +771,7 @@ String getAdminPage();
 String getServiceTypeString(ServiceType type);
 String getSnmpCompareOpString(SnmpCompareOp op);
 SnmpCompareOp parseSnmpCompareOp(const String& opStr);
+bool compareSnmpValue(const String& actualValue, SnmpCompareOp op, const String& expectedValue);
 String base64Encode(const String& input);
 bool readSmtpResponse(WiFiClient& client, int expectedCode);
 bool sendSmtpCommand(WiFiClient& client, const String& command, int expectedCode);
