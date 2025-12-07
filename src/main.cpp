@@ -539,6 +539,9 @@ bool sendLoRaChannelMessage(const String& message) {
 // Used to detect if time has been properly synchronized via NTP
 const time_t MIN_VALID_TIMESTAMP = 1609459200;
 
+// Boot timestamp - captured after initial NTP sync
+String bootTimestamp = "Not synchronized";
+
 // Pending MeshCore notification - used to defer BLE operations from HTTP handlers and boot
 // This prevents task watchdog timeouts by:
 // 1. Allowing the async web server to complete HTTP response delivery before WiFi disconnects
@@ -1035,6 +1038,13 @@ void initWiFi() {
     
     if (now >= MIN_VALID_TIMESTAMP) {
       Serial.printf("Time synchronized: %lu\n", (unsigned long)now);
+      // Capture boot timestamp for display
+      struct tm timeinfo;
+      if (getLocalTime(&timeinfo)) {
+        char buffer[30];
+        strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S UTC", &timeinfo);
+        bootTimestamp = String(buffer);
+      }
     } else {
       Serial.println("Warning: NTP time sync failed, timestamps may be incorrect");
     }
@@ -2642,9 +2652,8 @@ bool checkUptime(Service& service) {
       return false;
   }
   
-  if (!result) {
-    service.lastError = "Uptime " + String(uptimeSeconds) + "s failed threshold check";
-  }
+  // Always store the uptime value in lastError so UI can display it
+  service.lastError = "Uptime " + String(uptimeSeconds) + "s";
   
   return result;
 }
@@ -5215,6 +5224,7 @@ String getWebPage() {
             <h1>ESP32 Uptime Monitor</h1>
             <p>Service Status Overview</p>
             <p style="font-size: 0.85em; color: #999; margin-top: 5px;">Build: )rawliteral" + String(BUILD_TIMESTAMP) + R"rawliteral(</p>
+            <p style="font-size: 0.85em; color: #999; margin-top: 0px;">Boot: )rawliteral" + bootTimestamp + R"rawliteral(</p>
         </div>
         <div class="admin-link">
             <a href="/admin">Administration Panel</a>
@@ -5701,8 +5711,7 @@ String getKioskPage() {
 </html>)rawliteral";
 }
 String getAdminPage() {
-  return R"rawliteral(
-<!DOCTYPE html>
+  return R"rawliteral(<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -6198,7 +6207,6 @@ String getAdminPage() {
         <div class="header">
             <h1>ESP32 Uptime Monitor - Admin</h1>
             <p><a href="/" style="color: white; text-decoration: underline; opacity: 0.9;">← Back to Status View</a></p>
-            <p style="font-size: 0.85em; color: rgba(255,255,255,0.7); margin-top: 5px;">Build: )rawliteral" + String(BUILD_TIMESTAMP) + R"rawliteral(</p>
         </div>
 
         <div id="alertContainer"></div>
@@ -6913,6 +6921,5 @@ String getAdminPage() {
         document.getElementById('serviceType').dispatchEvent(new Event('change'));
     </script>
 </body>
-</html>
-)rawliteral";
+</html>)rawliteral";
 }
