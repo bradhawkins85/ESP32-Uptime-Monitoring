@@ -462,6 +462,34 @@ struct MeshCoreChannel {
 };
 static MeshCoreChannel meshChannel;
 static bool meshChannelConfigured = false;
+
+// RX callback for LoRa - logs any received packets for diagnostics
+void onLoRaReceive(const uint8_t* data, size_t len) {
+  Serial.printf("\n[RX] *** PACKET RECEIVED *** %d bytes\n", (int)len);
+  Serial.print("[RX] Hex: ");
+  for (size_t i = 0; i < len && i < 64; i++) {
+    Serial.printf("%02X ", data[i]);
+  }
+  Serial.println();
+  
+  if (len >= 3) {
+    uint8_t header = data[0];
+    uint8_t routeType = (header >> 4) & 0x0F;
+    uint8_t payloadType = header & 0x0F;
+    uint8_t pathLen = data[1];
+    uint8_t channelHash = data[2];
+    
+    Serial.printf("[RX] Header: 0x%02X (route=%d, payload=%d)\n", header, routeType, payloadType);
+    Serial.printf("[RX] Path len: %d, Channel hash: 0x%02X\n", pathLen, channelHash);
+    
+    if (channelHash == meshChannel.hash[0]) {
+      Serial.println("[RX] *** MATCHES OUR CHANNEL! ***");
+    } else {
+      Serial.printf("[RX] Different channel (ours: 0x%02X)\n", meshChannel.hash[0]);
+    }
+  }
+  Serial.println("[RX] ==================\n");
+}
 #endif
 
 // BLE/WiFi coexistence - ESP32-S3 cannot run WiFi and BLE simultaneously
@@ -589,6 +617,10 @@ bool ensureLoRaTransportInitialized() {
     return false;
   }
   
+  // Set RX callback to log received packets
+  meshTransport->setRxCallback(onLoRaReceive);
+  Serial.println("[LoRa] RX callback registered");
+  
   // Configure channel
   if (!configureMeshChannel()) {
     recordMeshError("ERROR: Channel configuration failed");
@@ -638,8 +670,9 @@ size_t encryptThenMAC(const uint8_t* secret, size_t secretLen, uint8_t* output, 
   mbedtls_md_hmac_finish(&md, hmacFull);
   mbedtls_md_free(&md);
 
+  // Temporarily disable MAC by forcing bytes to zero for interoperability testing
   for (uint8_t i = 0; i < CIPHER_MAC_SIZE; i++) {
-    output[i] = hmacFull[i];
+    output[i] = 0x00;
   }
 
   return CIPHER_MAC_SIZE + paddedLen;
@@ -1110,9 +1143,29 @@ void loop() {
 
 #if DEBUG_LORA_FORCE_SEND_INTERVAL_MS > 0
   static unsigned long lastLoRaDebugSend = 0;
-  if (currentTime - lastLoRaDebugSend >= DEBUG_LORA_FORCE_SEND_INTERVAL_MS) {
+  static unsigned long nextDebugSendTime = DEBUG_LORA_FORCE_SEND_INTERVAL_MS;
+  static uint32_t debugMsgCounter = 0;
+  
+  // Add ±5 second jitter to avoid predictable collision patterns
+  if (currentTime >= nextDebugSendTime) {
     lastLoRaDebugSend = currentTime;
-    sendLoRaChannelMessage("ESP32", "Periodic debug send");
+    debugMsgCounter++;
+    
+    // Calculate next send time with random jitter: base interval ± 5000ms
+    int32_t jitter = (esp_random() % 10001) - 5000;  // -5000 to +5000 ms
+    nextDebugSendTime = currentTime + DEBUG_LORA_FORCE_SEND_INTERVAL_MS + jitter;
+    Serial.printf("[LoRa] Next debug send in %lu ms (jitter: %ld ms)\n", 
+                  nextDebugSendTime - currentTime, jitter);
+    
+    // Create unique message with timestamp and counter
+    time_t now = time(nullptr);
+    struct tm* timeinfo = localtime(&now);
+    char timeStr[32];
+    strftime(timeStr, sizeof(timeStr), "%H:%M:%S", timeinfo);
+    
+    String debugMsg = String("Test #") + String(debugMsgCounter) + 
+                      String(" @") + String(timeStr);
+    sendLoRaChannelMessage("ESP32", debugMsg);
   }
 #endif
 

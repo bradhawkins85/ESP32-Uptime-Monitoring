@@ -122,10 +122,22 @@ bool LoRaTransport::init() {
         m_stateCallback(true);
     }
     
+    // CRITICAL: Force radio into RX mode and verify (no verbose OK prints to avoid log spam)
+    
+    // Ensure radio is in standby first
+    state = m_radio->standby();
+    if (state != RADIOLIB_ERR_NONE) {
+        Serial.printf("Warning: standby() failed: %d\n", state);
+    }
+    
+    // Small delay to ensure state transition completes
+    delay(10);
+    
     // Start listening for incoming packets
     int rxState = m_radio->startReceive();
     if (rxState != RADIOLIB_ERR_NONE) {
-        Serial.printf("LoRaTransport: startReceive failed at init: %d\n", rxState);
+        Serial.printf("ERROR: startReceive failed at init: %d\n", rxState);
+        Serial.println("[LoRa] RX MODE FAILED - Radio cannot receive packets!");
     }
     
     return true;
@@ -175,8 +187,26 @@ bool LoRaTransport::send(const uint8_t* data, size_t len) {
                   m_config.frequency, m_config.bandwidth, 
                   m_config.spreadingFactor, m_config.codingRate, m_config.txPower);
     
-    // Yield before transmission to feed watchdog
-    vTaskDelay(pdMS_TO_TICKS(5));
+    // Random delay (50-200ms) to reduce collision probability
+    uint32_t randomDelay = 50 + (esp_random() % 151);
+    Serial.printf("[TX] Random pre-tx delay: %lu ms\n", randomDelay);
+    vTaskDelay(pdMS_TO_TICKS(randomDelay));
+    
+    // Check for channel activity before transmitting (CAD)
+    Serial.println("[TX] Performing CAD (Channel Activity Detection)...");
+    int cadState = m_radio->scanChannel();
+    if (cadState == RADIOLIB_PREAMBLE_DETECTED) {
+        Serial.println("[TX] Channel busy (preamble detected), waiting 500ms and retrying...");
+        vTaskDelay(pdMS_TO_TICKS(500));
+        cadState = m_radio->scanChannel();
+        if (cadState == RADIOLIB_PREAMBLE_DETECTED) {
+            Serial.println("[TX] Channel still busy, aborting transmission");
+            m_lastError = "Channel busy (collision avoidance)";
+            startReceive();
+            return false;
+        }
+    }
+    Serial.println("[TX] Channel clear, proceeding with transmission");
     
     // Indicate TX start if LED configured
     if (m_config.txLedPin >= 0) {
@@ -215,7 +245,7 @@ bool LoRaTransport::send(const uint8_t* data, size_t len) {
     if (m_config.txLedPin >= 0) {
         digitalWrite(m_config.txLedPin, LOW);
     }
-    
+
     return true;
 }
 
@@ -242,7 +272,7 @@ void LoRaTransport::startReceive() {
     if (!m_initialized || m_radio == nullptr) {
         return;
     }
-    
+
     int state = m_radio->startReceive();
     if (state != RADIOLIB_ERR_NONE) {
         Serial.printf("LoRaTransport: startReceive failed: %d\n", state);
@@ -252,6 +282,14 @@ void LoRaTransport::startReceive() {
 void LoRaTransport::processReceive() {
     if (!m_initialized || m_radio == nullptr) {
         return;
+    }
+    
+    // Periodic diagnostic every 30 seconds
+    static unsigned long lastDiag = 0;
+    unsigned long now = millis();
+    if (now - lastDiag >= 30000) {
+        lastDiag = now;
+        Serial.println("[RX] Still polling... (no packets received)");
     }
     
     // Check if a packet was received by attempting to read
