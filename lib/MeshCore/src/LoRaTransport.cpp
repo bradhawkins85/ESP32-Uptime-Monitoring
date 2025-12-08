@@ -32,6 +32,16 @@ bool LoRaTransport::init() {
     m_spi = new SPIClass(HSPI);
     m_spi->begin(m_config.pinSck, m_config.pinMiso, m_config.pinMosi, m_config.pinNss);
 
+    // Enable Vext if configured (common on Heltec boards to power sensors/RF switch)
+    if (m_config.pinVext >= 0) {
+        pinMode(m_config.pinVext, OUTPUT);
+        digitalWrite(m_config.pinVext, LOW); // Active LOW for Heltec V3 Vext
+        delay(50); // Allow power to stabilize
+        Serial.printf("LoRaTransport: Vext enabled on pin %d\n", m_config.pinVext);
+    } else {
+        Serial.println("LoRaTransport: Vext not configured (pinVext = -1)");
+    }
+
     // Configure TX LED pin if provided
     if (m_config.txLedPin >= 0) {
         pinMode(m_config.txLedPin, OUTPUT);
@@ -51,14 +61,6 @@ bool LoRaTransport::init() {
                   m_config.syncWord, m_config.preambleLength,
                   m_config.tcxoVoltage);
 
-    // Configure TCXO if provided (common on Heltec SX1262 boards)
-    if (m_config.tcxoVoltage > 0) {
-        int tcxoState = m_radio->setTCXO(m_config.tcxoVoltage);
-        if (tcxoState != RADIOLIB_ERR_NONE) {
-            Serial.printf("Warning: setTCXO(%.2f) failed: %d\n", m_config.tcxoVoltage, tcxoState);
-        }
-    }
-    
     int state = m_radio->begin(
         m_config.frequency,
         m_config.bandwidth,
@@ -74,6 +76,17 @@ bool LoRaTransport::init() {
         Serial.println(m_lastError);
         deinit();
         return false;
+    }
+
+    // Configure TCXO if provided (common on Heltec SX1262 boards)
+    // MUST be done after begin() because begin() resets the chip
+    if (m_config.tcxoVoltage > 0) {
+        int tcxoState = m_radio->setTCXO(m_config.tcxoVoltage);
+        if (tcxoState != RADIOLIB_ERR_NONE) {
+            Serial.printf("Warning: setTCXO(%.2f) failed: %d\n", m_config.tcxoVoltage, tcxoState);
+        } else {
+            Serial.printf("TCXO configured at %.2fV\n", m_config.tcxoVoltage);
+        }
     }
     
     // Configure for explicit header mode (used by MeshCore)
@@ -109,6 +122,14 @@ bool LoRaTransport::init() {
         Serial.printf("Warning: setPaConfig failed: %d\n", state);
     } else {
         Serial.println("PA configured for SX1262 (high power, +22 dBm)");
+    }
+
+    // Set Over Current Protection to 140mA (required for +22dBm)
+    state = m_radio->setCurrentLimit(140);
+    if (state != RADIOLIB_ERR_NONE) {
+        Serial.printf("Warning: setCurrentLimit(140) failed: %d\n", state);
+    } else {
+        Serial.println("Current limit set to 140mA");
     }
     
     m_initialized = true;
@@ -196,7 +217,8 @@ bool LoRaTransport::send(const uint8_t* data, size_t len) {
         }
         
         // Random delay (50-200ms) to reduce collision probability
-        uint32_t randomDelay = 50 + (esp_random() % 151);
+        // Increased to 200-500ms to allow repeaters time to process and forward
+        uint32_t randomDelay = 200 + (esp_random() % 301);
         Serial.printf("[TX] Random pre-tx delay: %lu ms\n", randomDelay);
         vTaskDelay(pdMS_TO_TICKS(randomDelay));
         

@@ -59,6 +59,7 @@ public:
         int8_t txPower = DEFAULT_TX_POWER;
         uint16_t preambleLength = DEFAULT_PREAMBLE_LENGTH;
         int8_t txLedPin = -1;            // Optional GPIO to pulse during TX (-1 disables)
+        int8_t pinVext = -1;             // Optional GPIO to enable external power (-1 disables)
         float tcxoVoltage = DEFAULT_TCXO_VOLTAGE; // Set >0 to enable TCXO on DIO3
         
         // Transmission retry parameters

@@ -31,6 +31,7 @@ extern const uint8_t LORA_CODING_RATE;      // 5-8 for 4/5 to 4/8 (default: 5)
 extern const uint16_t LORA_SYNC_WORD;       // Sync word (MeshCore uses private 0x1424)
 extern const int8_t LORA_TX_POWER;          // dBm (default: 22)
 extern const int LORA_TX_LED_PIN;           // Optional GPIO to pulse during LoRa TX (-1 to disable)
+extern const int LORA_VEXT_PIN;             // Optional GPIO to enable external power (e.g. 21 on Heltec V3)
 extern const uint16_t LORA_PREAMBLE_LENGTH; // LoRa preamble symbols (default 16 to match MeshCore)
 extern const float LORA_TCXO_VOLTAGE;       // TCXO voltage for SX126x (e.g., 1.6 for Heltec)
 

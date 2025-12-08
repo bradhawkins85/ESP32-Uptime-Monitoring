@@ -463,6 +463,11 @@ struct MeshCoreChannel {
 static MeshCoreChannel meshChannel;
 static bool meshChannelConfigured = false;
 
+// Global variables for tracking sent messages and echoes
+static uint8_t lastSentCiphertext[256];
+static size_t lastSentCiphertextLen = 0;
+static volatile bool lastMessageConfirmed = false;
+
 // RX callback for LoRa - logs any received packets for diagnostics
 void onLoRaReceive(const uint8_t* data, size_t len) {
   Serial.printf("\n[RX] *** PACKET RECEIVED *** %d bytes\n", (int)len);
@@ -477,15 +482,34 @@ void onLoRaReceive(const uint8_t* data, size_t len) {
     uint8_t routeType = (header >> 4) & 0x0F;
     uint8_t payloadType = header & 0x0F;
     uint8_t pathLen = data[1];
-    uint8_t channelHash = data[2];
+    uint8_t channelHash = data[2]; // This is only true if pathLen is 0!
     
-    Serial.printf("[RX] Header: 0x%02X (route=%d, payload=%d)\n", header, routeType, payloadType);
-    Serial.printf("[RX] Path len: %d, Channel hash: 0x%02X\n", pathLen, channelHash);
+    // Correct parsing based on path length
+    // Packet structure: [Header 1][PathLen 1][PathData N][Hash 1][MAC 2][Ciphertext M]
+    size_t hashOffset = 2 + pathLen;
+    size_t macOffset = hashOffset + 1;
+    size_t ciphertextOffset = macOffset + 2;
     
-    if (channelHash == meshChannel.hash[0]) {
-      Serial.println("[RX] *** MATCHES OUR CHANNEL! ***");
-    } else {
-      Serial.printf("[RX] Different channel (ours: 0x%02X)\n", meshChannel.hash[0]);
+    if (len > ciphertextOffset) {
+        channelHash = data[hashOffset];
+        Serial.printf("[RX] Header: 0x%02X (route=%d, payload=%d)\n", header, routeType, payloadType);
+        Serial.printf("[RX] Path len: %d, Channel hash: 0x%02X\n", pathLen, channelHash);
+        
+        if (channelHash == meshChannel.hash[0]) {
+          Serial.println("[RX] *** MATCHES OUR CHANNEL! ***");
+          
+          // Check if this is an echo of our last sent message
+          // Compare ciphertext (payload)
+          size_t incomingCiphertextLen = len - ciphertextOffset;
+          if (lastSentCiphertextLen > 0 && incomingCiphertextLen == lastSentCiphertextLen) {
+              if (memcmp(&data[ciphertextOffset], lastSentCiphertext, lastSentCiphertextLen) == 0) {
+                  Serial.println("[RX] *** ECHO DETECTED: Message confirmed by mesh! ***");
+                  lastMessageConfirmed = true;
+              }
+          }
+        } else {
+          Serial.printf("[RX] Different channel (ours: 0x%02X)\n", meshChannel.hash[0]);
+        }
     }
   }
   Serial.println("[RX] ==================\n");
@@ -607,6 +631,10 @@ bool ensureLoRaTransportInitialized() {
   config.codingRate = LORA_CODING_RATE;
   config.syncWord = LORA_SYNC_WORD;
   config.txPower = LORA_TX_POWER;
+  config.pinVext = LORA_VEXT_PIN;
+  config.txLedPin = LORA_TX_LED_PIN;
+  config.tcxoVoltage = LORA_TCXO_VOLTAGE;
+  config.preambleLength = LORA_PREAMBLE_LENGTH;
   
   meshTransport = new LoRaTransport(config);
   
@@ -670,10 +698,8 @@ size_t encryptThenMAC(const uint8_t* secret, size_t secretLen, uint8_t* output, 
   mbedtls_md_hmac_finish(&md, hmacFull);
   mbedtls_md_free(&md);
 
-  // Temporarily disable MAC by forcing bytes to zero for interoperability testing
-  for (uint8_t i = 0; i < CIPHER_MAC_SIZE; i++) {
-    output[i] = 0x00;
-  }
+  // Copy first 2 bytes of HMAC to output (MAC field)
+  memcpy(output, hmacFull, CIPHER_MAC_SIZE);
 
   return CIPHER_MAC_SIZE + paddedLen;
 }
@@ -689,12 +715,6 @@ bool sendLoRaChannelMessage(const String& senderName, const String& message) {
   Serial.printf("\n=== sendLoRaChannelMessage START ===\n");
   Serial.printf("  Sender: %s\n", senderName.c_str());
   Serial.printf("  Message: %s\n", message.c_str());
-  Serial.printf("  Transport ptr: %p\n", meshTransport);
-  if (meshTransport) {
-    Serial.printf("  Transport initialized: %d\n", meshTransport->isInitialized());
-    Serial.printf("  Transport connected: %d\n", meshTransport->isConnected());
-  }
-  Serial.printf("  Channel configured: %d\n", meshChannelConfigured);
   
   if (!ensureLoRaTransportInitialized()) {
     recordMeshError("ERROR: LoRa transport not initialized");
@@ -708,80 +728,114 @@ bool sendLoRaChannelMessage(const String& senderName, const String& message) {
     return false;
   }
 
-  // Build plaintext payload: [timestamp (4)][txt_type (1)][sender: message]
-  uint8_t plaintext[256];
-  size_t ptIdx = 0;
-  
-  // Timestamp (little-endian, 4 bytes)
-  time_t now = time(nullptr);
-  uint32_t timestamp = static_cast<uint32_t>(now);
-  Serial.printf("  Timestamp: %u (0x%08X)\n", timestamp, timestamp);
-  plaintext[ptIdx++] = timestamp & 0xFF;
-  plaintext[ptIdx++] = (timestamp >> 8) & 0xFF;
-  plaintext[ptIdx++] = (timestamp >> 16) & 0xFF;
-  plaintext[ptIdx++] = (timestamp >> 24) & 0xFF;
-  
-  // Text type (0 = plain)
-  plaintext[ptIdx++] = TXT_TYPE_PLAIN;
-  
-  // Format message as "sender: message" (MeshCore group message format)
-  String fullMessage = senderName + ": " + message;
-  size_t textLen = fullMessage.length();
-  if (textLen > LORA_MAX_TEXT_MESSAGE_LEN) {
-    textLen = LORA_MAX_TEXT_MESSAGE_LEN;
+  const int MAX_RETRIES = 3;
+  bool success = false;
+
+  for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      if (attempt > 1) {
+          Serial.printf("\n  --- Retry Attempt %d/%d ---\n", attempt, MAX_RETRIES);
+          // Random delay before retry to avoid synchronized collisions and give mesh time to settle
+          delay(random(1000, 3000));
+      }
+
+      // Build plaintext payload: [timestamp (4)][txt_type (1)][sender: message]
+      uint8_t plaintext[256];
+      size_t ptIdx = 0;
+      
+      // Timestamp (little-endian, 4 bytes)
+      // We regenerate timestamp on each retry so it's a "new" message
+      // This ensures the mesh doesn't drop it as a duplicate if the previous one was heard but echo was missed
+      time_t now = time(nullptr);
+      uint32_t timestamp = static_cast<uint32_t>(now);
+      plaintext[ptIdx++] = timestamp & 0xFF;
+      plaintext[ptIdx++] = (timestamp >> 8) & 0xFF;
+      plaintext[ptIdx++] = (timestamp >> 16) & 0xFF;
+      plaintext[ptIdx++] = (timestamp >> 24) & 0xFF;
+      
+      // Text type (0 = plain)
+      plaintext[ptIdx++] = TXT_TYPE_PLAIN;
+      
+      // Format message as "sender: message"
+      String fullMessage = senderName + ": " + message;
+      size_t textLen = fullMessage.length();
+      if (textLen > LORA_MAX_TEXT_MESSAGE_LEN) {
+        textLen = LORA_MAX_TEXT_MESSAGE_LEN;
+      }
+      memcpy(&plaintext[ptIdx], fullMessage.c_str(), textLen);
+      ptIdx += textLen;
+      
+      // Build MeshCore GroupText packet
+      uint8_t packet[256];
+      size_t pktIdx = 0;
+      
+      // Header: GroupText (0x15)
+      packet[pktIdx++] = (0x01 << 4) | PAYLOAD_TYPE_GRP_TXT;
+      packet[pktIdx++] = 0x00; // Path len
+      packet[pktIdx++] = meshChannel.hash[0]; // Channel hash
+      
+      // Encrypt
+      size_t encryptedLen = encryptThenMAC(meshChannel.secret, meshChannel.secretLen, &packet[pktIdx], plaintext, ptIdx);
+      if (encryptedLen == 0) {
+        recordMeshError("ERROR: Failed to encrypt MeshCore payload");
+        return false;
+      }
+      
+      // Save ciphertext for echo detection
+      if (encryptedLen > 2) {
+          lastSentCiphertextLen = encryptedLen - 2;
+          if (lastSentCiphertextLen > sizeof(lastSentCiphertext)) {
+              lastSentCiphertextLen = sizeof(lastSentCiphertext);
+          }
+          memcpy(lastSentCiphertext, &packet[pktIdx + 2], lastSentCiphertextLen);
+          lastMessageConfirmed = false;
+      }
+      
+      pktIdx += encryptedLen;
+      
+      Serial.printf("  Sending packet (Attempt %d): %d bytes, TS: 0x%08X\n", attempt, (int)pktIdx, timestamp);
+      
+      // Send raw packet via LoRa
+      bool sent = meshTransport->send(packet, pktIdx);
+      
+      if (sent) {
+          Serial.println("  Waiting for mesh confirmation (echo)...");
+          unsigned long waitStart = millis();
+          bool confirmed = false;
+          
+          // Wait up to 15 seconds for an echo (mesh can be slow with multiple hops)
+          while (millis() - waitStart < 15000) {
+              meshTransport->processReceive();
+              
+              if (lastMessageConfirmed) {
+                  confirmed = true;
+                  break;
+              }
+              delay(10);
+          }
+          
+          if (confirmed) {
+              Serial.println("  SUCCESS: Message confirmed by mesh echo!");
+              success = true;
+              break; // Exit retry loop
+          } else {
+              Serial.println("  WARNING: No echo received within 15s.");
+          }
+      } else {
+          Serial.println("  ERROR: Radio send failed.");
+          recordMeshError("ERROR: LoRa radio send failed");
+          
+          // If radio send fails, try to re-initialize the transport
+          Serial.println("  Attempting to re-initialize LoRa transport...");
+          if (meshTransport) {
+              delete meshTransport;
+              meshTransport = nullptr;
+          }
+          ensureLoRaTransportInitialized();
+      }
   }
-  memcpy(&plaintext[ptIdx], fullMessage.c_str(), textLen);
-  ptIdx += textLen;
-  
-  // Build MeshCore GroupText packet: [header][path_len][channel_hash][MAC(2)][ciphertext]
-  // Actual network capture: 0x15 0x00 [channel_hash] [MAC] [ciphertext...]
-  uint8_t packet[256];
-  size_t pktIdx = 0;
-  
-  // Header byte: route type (upper nibble), payload type (lower nibble)
-  // Flood=0x1, GroupText=0x5 → (0x1 << 4) | 0x5 = 0x15
-  packet[pktIdx++] = (0x01 << 4) | PAYLOAD_TYPE_GRP_TXT;
-  
-  // Path length (0 for direct/flood messages)
-  packet[pktIdx++] = 0x00;
-  
-  // Channel hash (1 byte)
-  packet[pktIdx++] = meshChannel.hash[0];
-  
-  // Encrypt plaintext and add MAC + ciphertext to packet
-  size_t encryptedLen = encryptThenMAC(meshChannel.secret, meshChannel.secretLen, &packet[pktIdx], plaintext, ptIdx);
-  if (encryptedLen == 0) {
-    recordMeshError("ERROR: Failed to encrypt MeshCore payload");
-    return false;
-  }
-  pktIdx += encryptedLen;
-  
-  Serial.printf("Sending MeshCore packet: %d bytes (plaintext: %d, encrypted: %d)\n", 
-                (int)pktIdx, (int)ptIdx, (int)encryptedLen);
-  Serial.printf("  Channel hash: 0x%02X\n", meshChannel.hash[0]);
-  Serial.printf("  Message: %s\n", fullMessage.c_str());
-  Serial.printf("  Secret len: %d\n", (int)meshChannel.secretLen);
-  // Hex dump packet for debug / interoperability checks
-  Serial.print("  Packet hex: ");
-  for (size_t i = 0; i < pktIdx; i++) {
-    if (i > 0) Serial.print(" ");
-    Serial.printf("%02X", packet[i]);
-  }
-  Serial.println();
-  
-  // Send raw packet via LoRa
-  Serial.println("  Calling meshTransport->send()...");
-  bool ok = meshTransport->send(packet, pktIdx);
-  Serial.printf("  Send result: %s\n", ok ? "SUCCESS" : "FAILED");
-  if (!ok) {
-    String err = "ERROR: LoRa send failed: " + meshTransport->getLastError();
-    Serial.printf("  Error: %s\n", err.c_str());
-    recordMeshError(err);
-  } else {
-    meshLastError = "";
-  }
-  Serial.printf("=== sendLoRaChannelMessage END (result=%d) ===\n\n", ok);
-  return ok;
+
+  Serial.printf("=== sendLoRaChannelMessage END (success=%d) ===\n\n", success);
+  return success;
 }
 #endif
 
@@ -1368,6 +1422,7 @@ void initMeshCore() {
   config.syncWord = LORA_SYNC_WORD;
   config.txPower = LORA_TX_POWER;
   config.txLedPin = LORA_TX_LED_PIN;
+  config.pinVext = LORA_VEXT_PIN;
   config.preambleLength = LORA_PREAMBLE_LENGTH;
   config.tcxoVoltage = LORA_TCXO_VOLTAGE;
   Serial.printf("[LoRa] Pins NSS=%d DIO1=%d RST=%d BUSY=%d MOSI=%d MISO=%d SCK=%d\n",
