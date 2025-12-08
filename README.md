@@ -215,6 +215,7 @@ For the Heltec Wireless Stick Lite V3, the firmware uses the built-in SX1262 LoR
 - WiFi and LoRa can operate simultaneously (no coexistence issues like BLE+WiFi)
 - Simpler setup - just configure radio parameters to match your mesh network
 - Lower latency for notifications
+- Built-in retry logic for reliable message delivery in congested environments
 
 1. **Configure LoRa radio parameters**
    - Add the following values to your `.env` file to match your MeshCore network settings:
@@ -240,6 +241,14 @@ For the Heltec Wireless Stick Lite V3, the firmware uses the built-in SX1262 LoR
    - When a service goes down/up, the notification is broadcast directly on the configured LoRa frequency
    - Other MeshCore nodes in range will receive the message
    - The web API `/api/mesh/send` works the same way but sends over LoRa instead of BLE
+
+4. **Reliability improvements** (as of December 2024)
+   - **Automatic retries**: The firmware now retries failed transmissions up to 3 times with delays between attempts
+   - **Enhanced CAD**: Channel Activity Detection is performed up to 5 times to avoid collisions when the channel is busy
+   - **Smart backoff**: Exponential delays between retries reduce collision probability in congested networks
+   - **Verbose logging**: Serial output shows detailed retry information for troubleshooting
+   
+   These defaults provide reliable delivery in most environments. For congested mesh networks, monitor serial output to see retry patterns and adjust transmission timing if needed.
 
 ### Enabling ntfy notifications
 
