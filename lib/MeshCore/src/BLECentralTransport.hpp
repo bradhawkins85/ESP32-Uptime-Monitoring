@@ -38,13 +38,13 @@ public:
         const char* deviceName = "ESP32-Uptime";
         const char* peerName = "";
         uint32_t pairingPin = 123456;
-        int mtuNegotiationDelayMs = 3000;  // Increased from 2000ms for more reliable MTU negotiation
+        int mtuNegotiationDelayMs = 2000;
         int serviceDiscoveryRetries = 5;
         int serviceDiscoveryRetryDelayMs = 1000;
         int deinitCleanupDelayMs = 100;
         int clientCleanupDelayMs = 100;
-        int notifyRegistrationDelayMs = 1000;  // Increased from 500ms for more reliable notification setup
-        int scanSeconds = 15;  // Increased from 10s for better peer discovery in noisy environments
+        int notifyRegistrationDelayMs = 500;
+        int scanSeconds = 10;
     };
 
     explicit BLECentralTransport(const Config& config);

@@ -60,6 +60,12 @@ public:
         uint16_t preambleLength = DEFAULT_PREAMBLE_LENGTH;
         int8_t txLedPin = -1;            // Optional GPIO to pulse during TX (-1 disables)
         float tcxoVoltage = DEFAULT_TCXO_VOLTAGE; // Set >0 to enable TCXO on DIO3
+        
+        // Transmission retry parameters
+        uint8_t maxTransmitRetries = 3;  // Number of times to retry transmission on failure
+        uint8_t maxCadRetries = 5;       // Number of times to retry CAD when channel is busy
+        uint16_t cadRetryDelayMs = 500;  // Delay between CAD retries when channel is busy
+        uint16_t txRetryDelayMs = 1000;  // Delay between transmission retries
     };
 
     explicit LoRaTransport(const Config& config);

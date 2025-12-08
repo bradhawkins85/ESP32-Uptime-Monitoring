@@ -187,66 +187,111 @@ bool LoRaTransport::send(const uint8_t* data, size_t len) {
                   m_config.frequency, m_config.bandwidth, 
                   m_config.spreadingFactor, m_config.codingRate, m_config.txPower);
     
-    // Random delay (50-200ms) to reduce collision probability
-    uint32_t randomDelay = 50 + (esp_random() % 151);
-    Serial.printf("[TX] Random pre-tx delay: %lu ms\n", randomDelay);
-    vTaskDelay(pdMS_TO_TICKS(randomDelay));
-    
-    // Check for channel activity before transmitting (CAD)
-    Serial.println("[TX] Performing CAD (Channel Activity Detection)...");
-    int cadState = m_radio->scanChannel();
-    if (cadState == RADIOLIB_PREAMBLE_DETECTED) {
-        Serial.println("[TX] Channel busy (preamble detected), waiting 500ms and retrying...");
-        vTaskDelay(pdMS_TO_TICKS(500));
-        cadState = m_radio->scanChannel();
-        if (cadState == RADIOLIB_PREAMBLE_DETECTED) {
-            Serial.println("[TX] Channel still busy, aborting transmission");
+    // Retry transmission loop
+    for (uint8_t txAttempt = 0; txAttempt < m_config.maxTransmitRetries; txAttempt++) {
+        if (txAttempt > 0) {
+            Serial.printf("[TX] Retry attempt %d/%d after %d ms delay\n", 
+                          txAttempt + 1, m_config.maxTransmitRetries, m_config.txRetryDelayMs);
+            vTaskDelay(pdMS_TO_TICKS(m_config.txRetryDelayMs));
+        }
+        
+        // Random delay (50-200ms) to reduce collision probability
+        uint32_t randomDelay = 50 + (esp_random() % 151);
+        Serial.printf("[TX] Random pre-tx delay: %lu ms\n", randomDelay);
+        vTaskDelay(pdMS_TO_TICKS(randomDelay));
+        
+        // Channel Activity Detection with retries
+        bool channelClear = false;
+        for (uint8_t cadAttempt = 0; cadAttempt < m_config.maxCadRetries; cadAttempt++) {
+            if (cadAttempt > 0) {
+                Serial.printf("[TX] CAD retry %d/%d after %d ms\n", 
+                              cadAttempt + 1, m_config.maxCadRetries, m_config.cadRetryDelayMs);
+                vTaskDelay(pdMS_TO_TICKS(m_config.cadRetryDelayMs));
+            }
+            
+            Serial.println("[TX] Performing CAD (Channel Activity Detection)...");
+            int cadState = m_radio->scanChannel();
+            
+            if (cadState == RADIOLIB_CHANNEL_FREE) {
+                Serial.println("[TX] Channel clear");
+                channelClear = true;
+                break;
+            } else if (cadState == RADIOLIB_PREAMBLE_DETECTED) {
+                Serial.printf("[TX] Channel busy (preamble detected) on CAD attempt %d/%d\n", 
+                              cadAttempt + 1, m_config.maxCadRetries);
+                // Continue to next CAD attempt
+            } else {
+                Serial.printf("[TX] CAD failed with error: %d\n", cadState);
+                // On CAD error, assume channel is clear and proceed
+                channelClear = true;
+                break;
+            }
+        }
+        
+        if (!channelClear) {
+            Serial.printf("[TX] Channel still busy after %d CAD attempts, aborting this transmission attempt\n", 
+                          m_config.maxCadRetries);
             m_lastError = "Channel busy (collision avoidance)";
             startReceive();
-            return false;
+            // Continue to next transmission retry
+            continue;
         }
-    }
-    Serial.println("[TX] Channel clear, proceeding with transmission");
-    
-    // Indicate TX start if LED configured
-    if (m_config.txLedPin >= 0) {
-        digitalWrite(m_config.txLedPin, HIGH);
-    }
+        
+        // Indicate TX start if LED configured
+        if (m_config.txLedPin >= 0) {
+            digitalWrite(m_config.txLedPin, HIGH);
+        }
 
-    // Put radio in standby before transmitting
-    m_radio->standby();
-    
-    // Transmit the packet (blocking)
-    Serial.println("[TX] Calling radio->transmit()...");
-    unsigned long txStart = millis();
-    int state = m_radio->transmit(const_cast<uint8_t*>(data), len);
-    unsigned long txDuration = millis() - txStart;
-    
-    if (state != RADIOLIB_ERR_NONE) {
-        m_lastError = "Transmit failed with code: " + String(state);
-        Serial.printf("[TX] FAILED: %s (took %lu ms)\n", m_lastError.c_str(), txDuration);
-        // Return to receive mode even on error
+        // Put radio in standby before transmitting
+        m_radio->standby();
+        
+        // Transmit the packet (blocking)
+        Serial.printf("[TX] Calling radio->transmit() (attempt %d/%d)...\n", 
+                      txAttempt + 1, m_config.maxTransmitRetries);
+        unsigned long txStart = millis();
+        int state = m_radio->transmit(const_cast<uint8_t*>(data), len);
+        unsigned long txDuration = millis() - txStart;
+        
+        if (state != RADIOLIB_ERR_NONE) {
+            m_lastError = "Transmit failed with code: " + String(state);
+            Serial.printf("[TX] FAILED: %s (took %lu ms, attempt %d/%d)\n", 
+                          m_lastError.c_str(), txDuration, txAttempt + 1, m_config.maxTransmitRetries);
+            // Turn off TX LED
+            if (m_config.txLedPin >= 0) {
+                digitalWrite(m_config.txLedPin, LOW);
+            }
+            // Return to receive mode
+            startReceive();
+            // Continue to next transmission retry
+            continue;
+        }
+        
+        // SUCCESS!
+        Serial.printf("[TX] SUCCESS (took %lu ms, attempt %d/%d)\n", 
+                      txDuration, txAttempt + 1, m_config.maxTransmitRetries);
+        Serial.printf("[TX] Airtime estimate: ~%.1f ms (SF%d, BW%.1f, %d bytes)\n",
+                      (float)len * 8.0f * (1 << m_config.spreadingFactor) / m_config.bandwidth,
+                      m_config.spreadingFactor, m_config.bandwidth, (int)len);
+        
+        // Yield after transmission
+        vTaskDelay(pdMS_TO_TICKS(5));
+        
+        // Return to receive mode after transmission
         startReceive();
-        return false;
+
+        // Turn off TX LED
+        if (m_config.txLedPin >= 0) {
+            digitalWrite(m_config.txLedPin, LOW);
+        }
+
+        m_lastError = "";
+        return true;
     }
     
-    Serial.printf("[TX] Radio reported success (took %lu ms)\n", txDuration);
-    Serial.printf("[TX] Airtime estimate: ~%.1f ms (SF%d, BW%.1f, %d bytes)\n",
-                  (float)len * 8.0f * (1 << m_config.spreadingFactor) / m_config.bandwidth,
-                  m_config.spreadingFactor, m_config.bandwidth, (int)len);
-    
-    // Yield after transmission
-    vTaskDelay(pdMS_TO_TICKS(5));
-    
-    // Return to receive mode after transmission
-    startReceive();
-
-    // Turn off TX LED
-    if (m_config.txLedPin >= 0) {
-        digitalWrite(m_config.txLedPin, LOW);
-    }
-
-    return true;
+    // All retries exhausted
+    Serial.printf("[TX] All %d transmission attempts failed\n", m_config.maxTransmitRetries);
+    m_lastError = "Transmission failed after " + String(m_config.maxTransmitRetries) + " retries";
+    return false;
 }
 
 bool LoRaTransport::isConnected() const {
