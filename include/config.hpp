@@ -18,14 +18,21 @@ extern const char* BLE_MESH_CHANNEL_NAME;
 extern const char* BLE_MESH_ROOM_SERVER_ID;
 extern const char* BLE_MESH_ROOM_SERVER_PASSWORD;
 
+// MeshCore LoRa group channel pre-shared key (Base64). Used when HAS_LORA_RADIO is defined.
+// Default is the public channel PSK. Override via build flag MESH_LORA_CHANNEL_PSK_BASE64_VALUE.
+extern const char* LORA_MESH_CHANNEL_PSK_BASE64;
+
 // LoRa radio configuration (for boards with built-in SX1262 radio)
 // These are used when HAS_LORA_RADIO is defined (e.g., Heltec Wireless Stick Lite V3)
 extern const float LORA_FREQUENCY;          // MHz (default: 915.0 for US915)
 extern const float LORA_BANDWIDTH;          // kHz (default: 250.0)
 extern const uint8_t LORA_SPREADING_FACTOR; // 7-12 (default: 10)
 extern const uint8_t LORA_CODING_RATE;      // 5-8 for 4/5 to 4/8 (default: 5)
-extern const uint8_t LORA_SYNC_WORD;        // Sync word (default: 0x12 for MeshCore)
+extern const uint16_t LORA_SYNC_WORD;       // Sync word (MeshCore uses private 0x1424)
 extern const int8_t LORA_TX_POWER;          // dBm (default: 22)
+extern const int LORA_TX_LED_PIN;           // Optional GPIO to pulse during LoRa TX (-1 to disable)
+extern const uint16_t LORA_PREAMBLE_LENGTH; // LoRa preamble symbols (default 16 to match MeshCore)
+extern const float LORA_TCXO_VOLTAGE;       // TCXO voltage for SX126x (e.g., 1.6 for Heltec)
 
 // ntfy configuration
 extern const char* NTFY_SERVER;

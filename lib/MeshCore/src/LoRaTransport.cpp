@@ -10,7 +10,7 @@ constexpr float LoRaTransport::DEFAULT_FREQUENCY;
 constexpr float LoRaTransport::DEFAULT_BANDWIDTH;
 constexpr uint8_t LoRaTransport::DEFAULT_SPREADING_FACTOR;
 constexpr uint8_t LoRaTransport::DEFAULT_CODING_RATE;
-constexpr uint8_t LoRaTransport::DEFAULT_SYNC_WORD;
+constexpr uint16_t LoRaTransport::DEFAULT_SYNC_WORD;
 constexpr int8_t LoRaTransport::DEFAULT_TX_POWER;
 constexpr uint16_t LoRaTransport::DEFAULT_PREAMBLE_LENGTH;
 constexpr size_t LoRaTransport::MAX_PACKET_SIZE;
@@ -31,6 +31,12 @@ bool LoRaTransport::init() {
     // Initialize SPI for the radio
     m_spi = new SPIClass(HSPI);
     m_spi->begin(m_config.pinSck, m_config.pinMiso, m_config.pinMosi, m_config.pinNss);
+
+    // Configure TX LED pin if provided
+    if (m_config.txLedPin >= 0) {
+        pinMode(m_config.txLedPin, OUTPUT);
+        digitalWrite(m_config.txLedPin, LOW);
+    }
     
     // Create RadioLib module with pin configuration
     m_module = new Module(m_config.pinNss, m_config.pinDio1, m_config.pinRst, m_config.pinBusy, *m_spi);
@@ -39,9 +45,19 @@ bool LoRaTransport::init() {
     m_radio = new SX1262(m_module);
     
     // Initialize the radio with MeshCore-compatible parameters
-    Serial.printf("LoRa config: %.1f MHz, BW %.1f kHz, SF %d, CR 4/%d\n",
+    Serial.printf("LoRa config: %.3f MHz, BW %.1f kHz, SF %d, CR 4/%d, SW 0x%04X, PRE=%u, TCXO=%.2f\n",
                   m_config.frequency, m_config.bandwidth,
-                  m_config.spreadingFactor, m_config.codingRate);
+                  m_config.spreadingFactor, m_config.codingRate,
+                  m_config.syncWord, m_config.preambleLength,
+                  m_config.tcxoVoltage);
+
+    // Configure TCXO if provided (common on Heltec SX1262 boards)
+    if (m_config.tcxoVoltage > 0) {
+        int tcxoState = m_radio->setTCXO(m_config.tcxoVoltage);
+        if (tcxoState != RADIOLIB_ERR_NONE) {
+            Serial.printf("Warning: setTCXO(%.2f) failed: %d\n", m_config.tcxoVoltage, tcxoState);
+        }
+    }
     
     int state = m_radio->begin(
         m_config.frequency,
@@ -78,6 +94,23 @@ bool LoRaTransport::init() {
         Serial.printf("Warning: DIO2 RF switch config failed: %d\n", state);
     }
     
+    // Explicitly set output power (ensure it's actually applied)
+    state = m_radio->setOutputPower(m_config.txPower);
+    if (state != RADIOLIB_ERR_NONE) {
+        Serial.printf("Warning: setOutputPower(%d) failed: %d\n", m_config.txPower, state);
+    } else {
+        Serial.printf("Output power explicitly set to %d dBm\n", m_config.txPower);
+    }
+    
+    // Configure PA (Power Amplifier) for SX1262 high power mode
+    // Parameters: paDutyCycle, hpMax, deviceSel (SX1262), paLut (PA optimal)
+    state = m_radio->setPaConfig(0x04, 0x07, 0x00, 0x01);
+    if (state != RADIOLIB_ERR_NONE) {
+        Serial.printf("Warning: setPaConfig failed: %d\n", state);
+    } else {
+        Serial.println("PA configured for SX1262 (high power, +22 dBm)");
+    }
+    
     m_initialized = true;
     m_lastError = "";
     
@@ -90,7 +123,10 @@ bool LoRaTransport::init() {
     }
     
     // Start listening for incoming packets
-    startReceive();
+    int rxState = m_radio->startReceive();
+    if (rxState != RADIOLIB_ERR_NONE) {
+        Serial.printf("LoRaTransport: startReceive failed at init: %d\n", rxState);
+    }
     
     return true;
 }
@@ -131,33 +167,54 @@ bool LoRaTransport::send(const uint8_t* data, size_t len) {
         m_lastError = "Invalid packet size";
         return false;
     }
-    
+
     Serial.printf("LoRaTransport TX: %d bytes\n", (int)len);
+    
+    // Verify radio configuration before sending
+    Serial.printf("[TX] Pre-send: freq=%.3f MHz, BW=%.1f kHz, SF=%d, CR=4/%d, power=%d dBm\n",
+                  m_config.frequency, m_config.bandwidth, 
+                  m_config.spreadingFactor, m_config.codingRate, m_config.txPower);
     
     // Yield before transmission to feed watchdog
     vTaskDelay(pdMS_TO_TICKS(5));
     
+    // Indicate TX start if LED configured
+    if (m_config.txLedPin >= 0) {
+        digitalWrite(m_config.txLedPin, HIGH);
+    }
+
     // Put radio in standby before transmitting
     m_radio->standby();
     
     // Transmit the packet (blocking)
+    Serial.println("[TX] Calling radio->transmit()...");
+    unsigned long txStart = millis();
     int state = m_radio->transmit(const_cast<uint8_t*>(data), len);
+    unsigned long txDuration = millis() - txStart;
     
     if (state != RADIOLIB_ERR_NONE) {
         m_lastError = "Transmit failed with code: " + String(state);
-        Serial.println(m_lastError);
+        Serial.printf("[TX] FAILED: %s (took %lu ms)\n", m_lastError.c_str(), txDuration);
         // Return to receive mode even on error
         startReceive();
         return false;
     }
     
-    Serial.println("LoRaTransport: packet transmitted successfully");
+    Serial.printf("[TX] Radio reported success (took %lu ms)\n", txDuration);
+    Serial.printf("[TX] Airtime estimate: ~%.1f ms (SF%d, BW%.1f, %d bytes)\n",
+                  (float)len * 8.0f * (1 << m_config.spreadingFactor) / m_config.bandwidth,
+                  m_config.spreadingFactor, m_config.bandwidth, (int)len);
     
     // Yield after transmission
     vTaskDelay(pdMS_TO_TICKS(5));
     
     // Return to receive mode after transmission
     startReceive();
+
+    // Turn off TX LED
+    if (m_config.txLedPin >= 0) {
+        digitalWrite(m_config.txLedPin, LOW);
+    }
     
     return true;
 }

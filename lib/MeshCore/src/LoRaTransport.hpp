@@ -29,9 +29,12 @@ public:
     static constexpr float DEFAULT_BANDWIDTH = 250.0;     // kHz
     static constexpr uint8_t DEFAULT_SPREADING_FACTOR = 10;
     static constexpr uint8_t DEFAULT_CODING_RATE = 5;     // 4/5
-    static constexpr uint8_t DEFAULT_SYNC_WORD = 0x12;    // MeshCore sync word
+    // MeshCore uses the LoRa private sync word (0x1424) on SX126x
+    static constexpr uint16_t DEFAULT_SYNC_WORD = 0x1424;
     static constexpr int8_t DEFAULT_TX_POWER = 22;        // dBm (max for SX1262)
-    static constexpr uint16_t DEFAULT_PREAMBLE_LENGTH = 8;
+    // MeshCore radios typically use a 16-symbol preamble; increase default to match
+    static constexpr uint16_t DEFAULT_PREAMBLE_LENGTH = 16;
+    static constexpr float DEFAULT_TCXO_VOLTAGE = -1.0f;  // -1 = no TCXO; 1.6f common on Heltec
     
     // Maximum packet size for LoRa transmissions
     static constexpr size_t MAX_PACKET_SIZE = 255;
@@ -52,9 +55,11 @@ public:
         float bandwidth = DEFAULT_BANDWIDTH;
         uint8_t spreadingFactor = DEFAULT_SPREADING_FACTOR;
         uint8_t codingRate = DEFAULT_CODING_RATE;
-        uint8_t syncWord = DEFAULT_SYNC_WORD;
+        uint16_t syncWord = DEFAULT_SYNC_WORD;
         int8_t txPower = DEFAULT_TX_POWER;
         uint16_t preambleLength = DEFAULT_PREAMBLE_LENGTH;
+        int8_t txLedPin = -1;            // Optional GPIO to pulse during TX (-1 disables)
+        float tcxoVoltage = DEFAULT_TCXO_VOLTAGE; // Set >0 to enable TCXO on DIO3
     };
 
     explicit LoRaTransport(const Config& config);

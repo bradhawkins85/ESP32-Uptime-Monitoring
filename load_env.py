@@ -40,6 +40,12 @@ def parse_env_file(filepath):
                 key, _, value = line.partition("=")
                 key = key.strip()
                 value = value.strip()
+                
+                # Strip inline comments (anything after # that's not in quotes)
+                # Simple approach: split on # and take first part if not quoted
+                if "#" in value and '"' not in value and "'" not in value:
+                    value = value.split("#")[0].strip()
+                
                 if key:
                     if not KEY_PATTERN.match(key):
                         print(f"  Warning: Skipping invalid key '{key}' on line {line_num}")
@@ -55,7 +61,7 @@ def get_build_flag(key, value):
     - String values are wrapped in escaped quotes
     - Boolean values (true/false) are converted to lowercase
     - Integer values are passed as-is
-    - Floating point values are passed as-is
+    - Floating point values are passed as-is (without quotes)
     """
     # The config.cpp expects *_VALUE macros
     macro_name = f"{key}_VALUE"
@@ -64,11 +70,12 @@ def get_build_flag(key, value):
     if value.lower() in ("true", "false"):
         # Boolean value
         return f"-D{macro_name}={value.lower()}"
+    elif is_float(value):
+        # Floating point value (check before integer since floats can look like ints)
+        # Pass numeric values WITHOUT quotes so they remain numeric types
+        return f"-D{macro_name}={value}"
     elif value.isdigit() or (len(value) > 1 and value.startswith("-") and value[1:].isdigit()):
         # Integer value (positive or negative)
-        return f"-D{macro_name}={value}"
-    elif is_float(value):
-        # Floating point value
         return f"-D{macro_name}={value}"
     else:
         # String value - wrap in escaped quotes
@@ -83,7 +90,8 @@ def is_float(value):
     try:
         float(value)
         # Make sure it's not just an integer (those are handled separately)
-        return "." in value or "e" in value.lower()
+        # Check for decimal point or scientific notation
+        return "." in value or "e" in value.lower() or "E" in value
     except ValueError:
         return False
 

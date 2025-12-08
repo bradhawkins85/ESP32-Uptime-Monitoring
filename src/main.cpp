@@ -9,6 +9,9 @@
 #include <HTTPClient.h>
 #include <ESP32Ping.h>
 #include <mbedtls/base64.h>
+#include <mbedtls/sha256.h>
+#include <mbedtls/aes.h>
+#include <mbedtls/md.h>
 #include <WiFiUdp.h>
 #include <SNMP.h>
 #include <regex.h>
@@ -19,6 +22,14 @@
 
 // MeshCore layered protocol implementation
 #include "MeshCore.hpp"
+
+#ifndef DEBUG_LORA_BOOT_SEND
+#define DEBUG_LORA_BOOT_SEND 1
+#endif
+
+#ifndef DEBUG_LORA_FORCE_SEND_INTERVAL_MS
+#define DEBUG_LORA_FORCE_SEND_INTERVAL_MS 30000  // Send test every 30 seconds
+#endif
 
 #include "config.hpp"
 
@@ -424,8 +435,15 @@ AsyncWebServer server(80);
 #ifdef HAS_LORA_RADIO
 static LoRaTransport* meshTransport = nullptr;
 static FrameCodec* meshCodec = nullptr;
-// In LoRa mode, messages are sent directly - no companion protocol needed
-// The LoRa radio is always "connected" once initialized
+static String meshLastError = "";  // Preserve last error even if transport is torn down
+
+// Helper to record last error and log it once
+void recordMeshError(const String& err) {
+  meshLastError = err;
+  if (err.length() > 0) {
+    Serial.println(err);
+  }
+}
 #else
 // Layer 1: BLE Transport - handles BLE connection and I/O
 // Layer 2: Frame Codec - handles frame parsing/building  
@@ -435,34 +453,112 @@ static FrameCodec* meshCodec = nullptr;
 static CompanionProtocol* meshProtocol = nullptr;
 #endif
 
+// MeshCore group channel structure for LoRa mode
+#ifdef HAS_LORA_RADIO
+struct MeshCoreChannel {
+  uint8_t hash[1];      // First byte of SHA256 of channel secret
+  uint8_t secret[32];   // Channel shared secret (PSK)
+  size_t secretLen;     // 16 or 32 bytes
+};
+static MeshCoreChannel meshChannel;
+static bool meshChannelConfigured = false;
+#endif
+
 // BLE/WiFi coexistence - ESP32-S3 cannot run WiFi and BLE simultaneously
 // This is not needed for LoRa mode since LoRa and WiFi can coexist
 bool bleOperationInProgress = false;
 bool monitoringPaused = false;
 
 // MeshCore protocol constants for LoRa mode
-// These match the CompanionProtocol constants used in BLE mode
+// These match the MeshCore mesh packet protocol
 #ifdef HAS_LORA_RADIO
-static constexpr uint8_t LORA_CMD_SEND_CHANNEL_TXT_MSG = 3;
-static constexpr uint8_t LORA_TXT_TYPE_PLAIN = 0;
-static constexpr uint8_t LORA_DEFAULT_CHANNEL_INDEX = 0;  // Default channel for broadcast
+static constexpr uint8_t PAYLOAD_TYPE_GRP_TXT = 0x05;  // GroupText (0x5 per capture)
+static constexpr uint8_t TXT_TYPE_PLAIN = 0;           // Plain text flag
 static constexpr size_t LORA_MAX_TEXT_MESSAGE_LEN = 140;
+static constexpr size_t MAX_SENDER_NAME_LEN = 20;
+static constexpr uint8_t CIPHER_BLOCK_SIZE = 16;      // AES block size
+// MeshCore GroupText uses 2-byte MAC per actual capture (0x10F5)
+static constexpr uint8_t CIPHER_MAC_SIZE = 2;         // MAC length
+
+// Decode Base64 PSK from config into meshChannel.secret
+bool decodeMeshChannelSecret(const char* pskBase64) {
+  if (pskBase64 == nullptr || strlen(pskBase64) == 0) {
+    Serial.println("ERROR: MeshCore PSK (Base64) is empty");
+    return false;
+  }
+
+  unsigned char decoded[64];
+  size_t decodedLen = 0;
+  int rc = mbedtls_base64_decode(decoded, sizeof(decoded), &decodedLen,
+                                 reinterpret_cast<const unsigned char*>(pskBase64), strlen(pskBase64));
+  if (rc != 0) {
+    Serial.printf("ERROR: Failed to decode MeshCore PSK (Base64), rc=%d\n", rc);
+    return false;
+  }
+
+  if (decodedLen != 16 && decodedLen != 32) {
+    Serial.printf("ERROR: MeshCore PSK length invalid (%d bytes). Expected 16 or 32.\n", (int)decodedLen);
+    return false;
+  }
+
+  memset(meshChannel.secret, 0, sizeof(meshChannel.secret));
+  memcpy(meshChannel.secret, decoded, decodedLen);
+  meshChannel.secretLen = decodedLen;
+  Serial.printf("[LoRa] PSK decoded len=%d (expected 16 or 32)\n", (int)decodedLen);
+  Serial.printf("[LoRa] PSK first 4 bytes: %02X %02X %02X %02X\n", meshChannel.secret[0], meshChannel.secret[1], meshChannel.secret[2], meshChannel.secret[3]);
+  return true;
+}
+
+/**
+ * Configure MeshCore channel from PSK
+ * Derives the channel hash from the PSK (per MeshCore spec)
+ * @return true if channel was configured successfully
+ */
+bool configureMeshChannel() {
+  if (meshChannelConfigured) {
+    return true;
+  }
+  
+  if (!decodeMeshChannelSecret(LORA_MESH_CHANNEL_PSK_BASE64)) {
+    recordMeshError("MeshCore PSK decode failed");
+    return false;
+  }
+
+  // Channel hash: first byte of SHA256(secret)
+  uint8_t fullHash[32];
+  mbedtls_sha256_context ctx;
+  mbedtls_sha256_init(&ctx);
+  mbedtls_sha256_starts(&ctx, 0);
+  mbedtls_sha256_update(&ctx, meshChannel.secret, meshChannel.secretLen);
+  mbedtls_sha256_finish(&ctx, fullHash);
+  mbedtls_sha256_free(&ctx);
+  meshChannel.hash[0] = fullHash[0];
+
+  meshChannelConfigured = true;
+  meshLastError = "";
+  Serial.printf("MeshCore channel configured (hash: 0x%02X, keylen: %d)\n", meshChannel.hash[0], (int)meshChannel.secretLen);
+  Serial.printf("[LoRa] Channel hash byte = %02X\n", meshChannel.hash[0]);
+  return true;
+}
 
 /**
  * Ensure LoRa transport is initialized
- * Creates the transport and codec if not already created
+ * Creates and initializes the LoRa transport if needed
  * @return true if transport is ready to use
  */
 bool ensureLoRaTransportInitialized() {
   if (meshTransport != nullptr && meshTransport->isInitialized()) {
+    // Transport is up; ensure channel is configured before sending
+    if (!meshChannelConfigured && !configureMeshChannel()) {
+      recordMeshError("ERROR: Channel configuration failed");
+      return false;
+    }
     return true;
   }
+
+  Serial.println("[LoRa] ensureLoRaTransportInitialized: creating transport");
   
   // Clean up any partial state
-  if (meshCodec != nullptr) {
-    delete meshCodec;
-    meshCodec = nullptr;
-  }
   if (meshTransport != nullptr) {
     delete meshTransport;
     meshTransport = nullptr;
@@ -485,53 +581,174 @@ bool ensureLoRaTransportInitialized() {
   config.txPower = LORA_TX_POWER;
   
   meshTransport = new LoRaTransport(config);
-  meshCodec = new FrameCodec(*meshTransport);
   
   if (!meshTransport->init()) {
-    Serial.println("ERROR: LoRa radio initialization failed");
-    delete meshCodec;
-    meshCodec = nullptr;
+    recordMeshError("ERROR: LoRa radio initialization failed");
     delete meshTransport;
     meshTransport = nullptr;
     return false;
   }
   
+  // Configure channel
+  if (!configureMeshChannel()) {
+    recordMeshError("ERROR: Channel configuration failed");
+    return false;
+  }
+  
+  meshLastError = "";
+  Serial.println("[LoRa] Transport initialized and channel configured");
   return true;
 }
 
 /**
+ * MeshCore encryptThenMAC equivalent:
+ * - AES-128 ECB with zero padding to block boundary
+ * - HMAC-SHA256(secret) over ciphertext, truncated to 2 bytes
+ */
+size_t encryptThenMAC(const uint8_t* secret, size_t secretLen, uint8_t* output, const uint8_t* plaintext, size_t plaintextLen) {
+  size_t paddedLen = ((plaintextLen + CIPHER_BLOCK_SIZE - 1) / CIPHER_BLOCK_SIZE) * CIPHER_BLOCK_SIZE;
+  uint8_t paddedPlaintext[256];
+  memcpy(paddedPlaintext, plaintext, plaintextLen);
+  if (paddedLen > plaintextLen) {
+    memset(paddedPlaintext + plaintextLen, 0, paddedLen - plaintextLen);  // zero padding like Utils::encrypt
+  }
+
+  // AES-128 ECB encrypt (key = first 16 bytes of secret)
+  uint8_t* ciphertext = output + CIPHER_MAC_SIZE;
+  mbedtls_aes_context aes;
+  mbedtls_aes_init(&aes);
+  mbedtls_aes_setkey_enc(&aes, secret, 128);
+  for (size_t offset = 0; offset < paddedLen; offset += CIPHER_BLOCK_SIZE) {
+    mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT, paddedPlaintext + offset, ciphertext + offset);
+  }
+  mbedtls_aes_free(&aes);
+
+  // HMAC-SHA256(secret, ciphertext) truncated to 2 bytes
+  unsigned char hmacFull[32];
+  mbedtls_md_context_t md;
+  const mbedtls_md_info_t* info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+  if (info == nullptr) {
+    Serial.println("ERROR: SHA256 HMAC info unavailable");
+    return 0;
+  }
+  mbedtls_md_init(&md);
+  mbedtls_md_setup(&md, info, 1);
+  mbedtls_md_hmac_starts(&md, secret, secretLen);
+  mbedtls_md_hmac_update(&md, ciphertext, paddedLen);
+  mbedtls_md_hmac_finish(&md, hmacFull);
+  mbedtls_md_free(&md);
+
+  for (uint8_t i = 0; i < CIPHER_MAC_SIZE; i++) {
+    output[i] = hmacFull[i];
+  }
+
+  return CIPHER_MAC_SIZE + paddedLen;
+}
+
+/**
  * Build and send a MeshCore channel message via LoRa
+ * Builds a proper PAYLOAD_TYPE_GRP_TXT packet with channel hash, MAC, and encrypted payload
+ * @param senderName Name to show as sender (e.g., "ESP32-Uptime")
  * @param message Message text to send
  * @return true if message was sent successfully
  */
-bool sendLoRaChannelMessage(const String& message) {
+bool sendLoRaChannelMessage(const String& senderName, const String& message) {
+  Serial.printf("\n=== sendLoRaChannelMessage START ===\n");
+  Serial.printf("  Sender: %s\n", senderName.c_str());
+  Serial.printf("  Message: %s\n", message.c_str());
+  Serial.printf("  Transport ptr: %p\n", meshTransport);
+  if (meshTransport) {
+    Serial.printf("  Transport initialized: %d\n", meshTransport->isInitialized());
+    Serial.printf("  Transport connected: %d\n", meshTransport->isConnected());
+  }
+  Serial.printf("  Channel configured: %d\n", meshChannelConfigured);
+  
   if (!ensureLoRaTransportInitialized()) {
+    recordMeshError("ERROR: LoRa transport not initialized");
+    Serial.println("[LoRa] ensureLoRaTransportInitialized failed");
     return false;
   }
   
-  // Build MeshCore packet for channel message
-  std::vector<uint8_t> payload;
-  
-  payload.push_back(LORA_TXT_TYPE_PLAIN);
-  payload.push_back(LORA_DEFAULT_CHANNEL_INDEX);
+  if (!meshChannelConfigured) {
+    recordMeshError("ERROR: MeshCore channel not configured");
+    Serial.println("[LoRa] channel not configured");
+    return false;
+  }
+
+  // Build plaintext payload: [timestamp (4)][txt_type (1)][sender: message]
+  uint8_t plaintext[256];
+  size_t ptIdx = 0;
   
   // Timestamp (little-endian, 4 bytes)
   time_t now = time(nullptr);
   uint32_t timestamp = static_cast<uint32_t>(now);
-  payload.push_back(static_cast<uint8_t>(timestamp & 0xFF));
-  payload.push_back(static_cast<uint8_t>((timestamp >> 8) & 0xFF));
-  payload.push_back(static_cast<uint8_t>((timestamp >> 16) & 0xFF));
-  payload.push_back(static_cast<uint8_t>((timestamp >> 24) & 0xFF));
+  Serial.printf("  Timestamp: %u (0x%08X)\n", timestamp, timestamp);
+  plaintext[ptIdx++] = timestamp & 0xFF;
+  plaintext[ptIdx++] = (timestamp >> 8) & 0xFF;
+  plaintext[ptIdx++] = (timestamp >> 16) & 0xFF;
+  plaintext[ptIdx++] = (timestamp >> 24) & 0xFF;
   
-  // Message text (truncate if too long)
-  size_t textLen = message.length();
+  // Text type (0 = plain)
+  plaintext[ptIdx++] = TXT_TYPE_PLAIN;
+  
+  // Format message as "sender: message" (MeshCore group message format)
+  String fullMessage = senderName + ": " + message;
+  size_t textLen = fullMessage.length();
   if (textLen > LORA_MAX_TEXT_MESSAGE_LEN) {
     textLen = LORA_MAX_TEXT_MESSAGE_LEN;
   }
-  payload.insert(payload.end(), message.begin(), message.begin() + textLen);
+  memcpy(&plaintext[ptIdx], fullMessage.c_str(), textLen);
+  ptIdx += textLen;
   
-  // Send using frame codec
-  return meshCodec->sendFrame(LORA_CMD_SEND_CHANNEL_TXT_MSG, payload);
+  // Build MeshCore GroupText packet: [header][path_len][channel_hash][MAC(2)][ciphertext]
+  // Actual network capture: 0x15 0x00 [channel_hash] [MAC] [ciphertext...]
+  uint8_t packet[256];
+  size_t pktIdx = 0;
+  
+  // Header byte: route type (upper nibble), payload type (lower nibble)
+  // Flood=0x1, GroupText=0x5 → (0x1 << 4) | 0x5 = 0x15
+  packet[pktIdx++] = (0x01 << 4) | PAYLOAD_TYPE_GRP_TXT;
+  
+  // Path length (0 for direct/flood messages)
+  packet[pktIdx++] = 0x00;
+  
+  // Channel hash (1 byte)
+  packet[pktIdx++] = meshChannel.hash[0];
+  
+  // Encrypt plaintext and add MAC + ciphertext to packet
+  size_t encryptedLen = encryptThenMAC(meshChannel.secret, meshChannel.secretLen, &packet[pktIdx], plaintext, ptIdx);
+  if (encryptedLen == 0) {
+    recordMeshError("ERROR: Failed to encrypt MeshCore payload");
+    return false;
+  }
+  pktIdx += encryptedLen;
+  
+  Serial.printf("Sending MeshCore packet: %d bytes (plaintext: %d, encrypted: %d)\n", 
+                (int)pktIdx, (int)ptIdx, (int)encryptedLen);
+  Serial.printf("  Channel hash: 0x%02X\n", meshChannel.hash[0]);
+  Serial.printf("  Message: %s\n", fullMessage.c_str());
+  Serial.printf("  Secret len: %d\n", (int)meshChannel.secretLen);
+  // Hex dump packet for debug / interoperability checks
+  Serial.print("  Packet hex: ");
+  for (size_t i = 0; i < pktIdx; i++) {
+    if (i > 0) Serial.print(" ");
+    Serial.printf("%02X", packet[i]);
+  }
+  Serial.println();
+  
+  // Send raw packet via LoRa
+  Serial.println("  Calling meshTransport->send()...");
+  bool ok = meshTransport->send(packet, pktIdx);
+  Serial.printf("  Send result: %s\n", ok ? "SUCCESS" : "FAILED");
+  if (!ok) {
+    String err = "ERROR: LoRa send failed: " + meshTransport->getLastError();
+    Serial.printf("  Error: %s\n", err.c_str());
+    recordMeshError(err);
+  } else {
+    meshLastError = "";
+  }
+  Serial.printf("=== sendLoRaChannelMessage END (result=%d) ===\n\n", ok);
+  return ok;
 }
 #endif
 
@@ -557,8 +774,8 @@ bool isMeshDeviceConnected() {
 
 bool isMeshChannelReady() {
 #ifdef HAS_LORA_RADIO
-  // For LoRa mode, channel is ready when transport is initialized
-  return meshTransport != nullptr && meshTransport->isInitialized();
+  // For LoRa mode, channel is ready when transport is initialized and channel is configured
+  return meshTransport != nullptr && meshTransport->isInitialized() && meshChannelConfigured;
 #else
   return meshProtocol != nullptr && meshProtocol->isChannelReady();
 #endif
@@ -566,10 +783,7 @@ bool isMeshChannelReady() {
 
 String getMeshLastError() {
 #ifdef HAS_LORA_RADIO
-  if (meshTransport != nullptr) {
-    return meshTransport->getLastError();
-  }
-  return "";
+  return meshLastError;
 #else
   if (meshProtocol != nullptr) {
     return meshProtocol->getLastError();
@@ -860,6 +1074,16 @@ void setup() {
   // Initialize web server
   initWebServer();
 
+#ifdef HAS_LORA_RADIO
+  // Initialize LoRa MeshCore radio at boot so logs appear and send path is ready
+  initMeshCore();
+  Serial.println("[LoRa] initMeshCore() completed (setup)");
+#if DEBUG_LORA_BOOT_SEND
+  Serial.println("[LoRa] DEBUG_LORA_BOOT_SEND enabled: sending boot test message");
+  sendLoRaChannelMessage("ESP32", "Boot test message");
+#endif
+#endif
+
   // Send boot notification if enabled and WiFi is connected
   if (BOOT_NOTIFICATION_ENABLED) {
     if (WiFi.status() == WL_CONNECTED) {
@@ -884,6 +1108,14 @@ void loop() {
   static bool hasPerformedChecks = false;  // Track if any check has been performed
   unsigned long currentTime = millis();
 
+#if DEBUG_LORA_FORCE_SEND_INTERVAL_MS > 0
+  static unsigned long lastLoRaDebugSend = 0;
+  if (currentTime - lastLoRaDebugSend >= DEBUG_LORA_FORCE_SEND_INTERVAL_MS) {
+    lastLoRaDebugSend = currentTime;
+    sendLoRaChannelMessage("ESP32", "Periodic debug send");
+  }
+#endif
+
 #ifdef HAS_LCD
   // Re-scan I2C periodically if touch is not ready (helps debug startup issues)
   static unsigned long lastI2CScan = 0;
@@ -906,6 +1138,13 @@ void loop() {
 
   // Update LED animation (call frequently for smooth pulsing)
   updateLed();
+
+#ifdef HAS_LORA_RADIO
+  // Poll LoRa receiver so incoming MeshCore packets are processed/logged
+  if (meshTransport != nullptr) {
+    meshTransport->processReceive();
+  }
+#endif
 
   // Process pending MeshCore notifications from HTTP handlers
   // This runs in the main loop to avoid blocking the async web server
@@ -1075,8 +1314,18 @@ void initMeshCore() {
   config.codingRate = LORA_CODING_RATE;
   config.syncWord = LORA_SYNC_WORD;
   config.txPower = LORA_TX_POWER;
+  config.txLedPin = LORA_TX_LED_PIN;
+  config.preambleLength = LORA_PREAMBLE_LENGTH;
+  config.tcxoVoltage = LORA_TCXO_VOLTAGE;
+  Serial.printf("[LoRa] Pins NSS=%d DIO1=%d RST=%d BUSY=%d MOSI=%d MISO=%d SCK=%d\n",
+                config.pinNss, config.pinDio1, config.pinRst, config.pinBusy,
+                config.pinMosi, config.pinMiso, config.pinSck);
+  Serial.printf("[LoRa] Params freq=%.3f BW=%.1f SF=%d CR=4/%d SW=0x%04X TX=%d dBm\n",
+                config.frequency, config.bandwidth, config.spreadingFactor,
+                config.codingRate, config.syncWord, config.txPower);
   
   meshTransport = new LoRaTransport(config);
+  Serial.println("[LoRa] LoRaTransport object created");
   meshCodec = new FrameCodec(*meshTransport);
   
   // Initialize the LoRa radio
@@ -1087,6 +1336,7 @@ void initMeshCore() {
   }
   
   Serial.println("MeshCore LoRa radio ready");
+  Serial.printf("[LoRa] meshTransport initialized=%d channelConfigured=%d\n", meshTransport->isInitialized(), meshChannelConfigured);
 #else
   // BLE mode: Connect to external MeshCore device
   // Create the layered protocol stack
@@ -1148,7 +1398,8 @@ void initFileSystem() {
   littleFsReady = false;
 
   // First attempt: try to mount without formatting
-  if (LittleFS.begin(false)) {
+  // Explicitly specify partition label "littlefs" (default searches for "spiffs")
+  if (LittleFS.begin(false, "/littlefs", 10, "littlefs")) {
     Serial.println("LittleFS mounted successfully");
     littleFsReady = true;
     return;
@@ -1159,7 +1410,7 @@ void initFileSystem() {
   // Second attempt: begin(true) formats automatically on mount failure and
   // handles partition initialization internally, which is more reliable than
   // calling format() directly on corrupted or uninitialized flash.
-  if (LittleFS.begin(true)) {
+  if (LittleFS.begin(true, "/littlefs", 10, "littlefs")) {
     Serial.println("LittleFS formatted and mounted successfully");
     littleFsReady = true;
     return;
@@ -1178,7 +1429,7 @@ void initFileSystem() {
   Serial.println("LittleFS formatted successfully");
 
   // Now try to mount the freshly formatted filesystem
-  if (!LittleFS.begin(false)) {
+  if (!LittleFS.begin(false, "/littlefs", 10, "littlefs")) {
     Serial.println("Critical: Failed to mount LittleFS after successful format!");
     littleFsReady = false;
     return;
@@ -3044,11 +3295,8 @@ void sendMeshCoreNotification(const String& title, const String& message) {
   
   Serial.println("Starting MeshCore notification (LoRa)...");
   
-  // Build the message: combine title and message
-  String fullMessage = title + ": " + message;
-  
-  // Send using helper function
-  if (sendLoRaChannelMessage(fullMessage)) {
+  // Send using helper function (sender name is "ESP32" to identify source)
+  if (sendLoRaChannelMessage("ESP32", title + ": " + message)) {
     Serial.println("MeshCore LoRa notification sent successfully");
   } else {
     if (meshTransport != nullptr) {
@@ -3428,11 +3676,8 @@ bool sendMeshCoreNotificationWithStatus(const String& title, const String& messa
   // Set LED to white to indicate MeshCore communication
   setLedStatus(LED_STATUS_MESHCORE);
   
-  // Build the message: combine title and message
-  String fullMessage = title + ": " + message;
-  
-  // Send using helper function
-  bool success = sendLoRaChannelMessage(fullMessage);
+  // Send using helper function (sender name is "ESP32" to identify source)
+  bool success = sendLoRaChannelMessage("ESP32", title + ": " + message);
   if (success) {
     Serial.println("MeshCore LoRa notification sent successfully");
   } else {
@@ -3711,9 +3956,7 @@ void processMeshCoreQueue() {
   for (int i = 0; i < queuedNotificationCount; i++) {
     QueuedNotification& notification = notificationQueue[i];
     if (notification.meshPending) {
-      String fullMessage = notification.title + ": " + notification.message;
-      
-      if (sendLoRaChannelMessage(fullMessage)) {
+      if (sendLoRaChannelMessage("ESP32", notification.title + ": " + notification.message)) {
         Serial.printf("Retry: MeshCore LoRa notification sent for %s\n", notification.serviceId.c_str());
         notification.meshPending = false;
       } else {
@@ -3916,6 +4159,19 @@ void loadServices() {
   if (!littleFsReady) {
     Serial.println("LittleFS not mounted; skipping loadServices");
     return;
+  }
+
+  if (!LittleFS.exists("/services.json")) {
+    Serial.println("No services.json found, creating empty services list");
+    File newFile = LittleFS.open("/services.json", "w");
+    if (newFile) {
+      JsonDocument emptyDoc;
+      emptyDoc.createNestedArray("services");
+      serializeJson(emptyDoc, newFile);
+      newFile.close();
+    } else {
+      Serial.println("ERROR: Failed to create services.json");
+    }
   }
 
   File file = LittleFS.open("/services.json", "r");
@@ -4374,7 +4630,16 @@ void loadEventLogs() {
   }
   
   if (!LittleFS.exists("/event_logs.json")) {
-    Serial.println("No event_logs.json file found - starting fresh");
+    Serial.println("No event_logs.json file found - creating empty log");
+    File newFile = LittleFS.open("/event_logs.json", "w");
+    if (newFile) {
+      JsonDocument emptyDoc;
+      emptyDoc.createNestedArray("eventLogs");
+      serializeJson(emptyDoc, newFile);
+      newFile.close();
+    } else {
+      Serial.println("ERROR: Failed to create event_logs.json");
+    }
     return;
   }
   
