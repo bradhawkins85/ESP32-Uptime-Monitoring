@@ -20,7 +20,10 @@ extern const char* BLE_MESH_ROOM_SERVER_PASSWORD;
 
 // MeshCore LoRa group channel pre-shared key (Base64). Used when HAS_LORA_RADIO is defined.
 // Default is the public channel PSK. Override via build flag MESH_LORA_CHANNEL_PSK_BASE64_VALUE.
+// Alternatively, set LORA_MESH_CHANNEL_NAME and optionally LORA_MESH_CHANNEL_SECRET to derive PSK.
 extern const char* LORA_MESH_CHANNEL_PSK_BASE64;
+extern const char* LORA_MESH_CHANNEL_NAME;    // Channel name for PSK derivation (empty = use PSK_BASE64)
+extern const char* LORA_MESH_CHANNEL_SECRET;  // Optional secret passphrase for PSK derivation
 
 // LoRa radio configuration (for boards with built-in SX1262 radio)
 // These are used when HAS_LORA_RADIO is defined (e.g., Heltec Wireless Stick Lite V3)

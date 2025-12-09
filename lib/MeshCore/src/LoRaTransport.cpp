@@ -55,10 +55,17 @@ bool LoRaTransport::init() {
     m_radio = new SX1262(m_module);
     
     // Initialize the radio with MeshCore-compatible parameters
-    Serial.printf("LoRa config: %.3f MHz, BW %.1f kHz, SF %d, CR 4/%d, SW 0x%04X, PRE=%u, TCXO=%.2f\n",
+    // RadioLib SX1262 uses a 1-byte sync word; mask to 8 bits and warn if caller provided more
+    uint8_t syncWordByte = static_cast<uint8_t>(m_config.syncWord & 0xFF);
+    if (m_config.syncWord > 0xFF) {
+        Serial.printf("Warning: sync word 0x%04X truncated to 0x%02X (SX1262 uses 1 byte)\n",
+                      m_config.syncWord, syncWordByte);
+    }
+
+    Serial.printf("LoRa config: %.3f MHz, BW %.1f kHz, SF %d, CR 4/%d, SW 0x%02X, PRE=%u, TCXO=%.2f\n",
                   m_config.frequency, m_config.bandwidth,
                   m_config.spreadingFactor, m_config.codingRate,
-                  m_config.syncWord, m_config.preambleLength,
+                  syncWordByte, m_config.preambleLength,
                   m_config.tcxoVoltage);
 
     int state = m_radio->begin(
@@ -66,9 +73,10 @@ bool LoRaTransport::init() {
         m_config.bandwidth,
         m_config.spreadingFactor,
         m_config.codingRate,
-        m_config.syncWord,
+        syncWordByte,
         m_config.txPower,
-        m_config.preambleLength
+        m_config.preambleLength,
+        m_config.tcxoVoltage
     );
     
     if (state != RADIOLIB_ERR_NONE) {
@@ -77,17 +85,6 @@ bool LoRaTransport::init() {
         deinit();
         return false;
     }
-
-    // Configure TCXO if provided (common on Heltec SX1262 boards)
-    // MUST be done after begin() because begin() resets the chip
-    if (m_config.tcxoVoltage > 0) {
-        int tcxoState = m_radio->setTCXO(m_config.tcxoVoltage);
-        if (tcxoState != RADIOLIB_ERR_NONE) {
-            Serial.printf("Warning: setTCXO(%.2f) failed: %d\n", m_config.tcxoVoltage, tcxoState);
-        } else {
-            Serial.printf("TCXO configured at %.2fV\n", m_config.tcxoVoltage);
-        }
-    }
     
     // Configure for explicit header mode (used by MeshCore)
     state = m_radio->explicitHeader();
@@ -95,10 +92,28 @@ bool LoRaTransport::init() {
         Serial.printf("Warning: explicit header mode failed: %d\n", state);
     }
     
-    // Set CRC on for data integrity
-    state = m_radio->setCRC(true);
+    // Set CRC (can be disabled via build flag for interop testing)
+    bool crcOn = true;
+#ifdef LORA_DISABLE_CRC
+    crcOn = false;
+#endif
+    state = m_radio->setCRC(crcOn);
     if (state != RADIOLIB_ERR_NONE) {
-        Serial.printf("Warning: CRC enable failed: %d\n", state);
+        Serial.printf("Warning: setCRC(%d) failed: %d\n", crcOn ? 1 : 0, state);
+    } else {
+        Serial.printf("LoRa CRC %s\n", crcOn ? "ENABLED" : "DISABLED");
+    }
+
+    // Allow IQ inversion to be toggled via build flag for interoperability testing
+    bool invertIq = false;
+#ifdef LORA_INVERT_IQ
+    invertIq = true;
+#endif
+    state = m_radio->invertIQ(invertIq);
+    if (state != RADIOLIB_ERR_NONE) {
+        Serial.printf("Warning: invertIQ(%d) failed: %d\n", invertIq ? 1 : 0, state);
+    } else {
+        Serial.printf("LoRa IQ %s\n", invertIq ? "INVERTED" : "NORMAL");
     }
     
     // Use DIO2 as RF switch control (common on Heltec boards)
@@ -108,6 +123,7 @@ bool LoRaTransport::init() {
     }
     
     // Explicitly set output power (ensure it's actually applied)
+    // RadioLib handles PA config automatically when setOutputPower is called
     state = m_radio->setOutputPower(m_config.txPower);
     if (state != RADIOLIB_ERR_NONE) {
         Serial.printf("Warning: setOutputPower(%d) failed: %d\n", m_config.txPower, state);
@@ -115,13 +131,11 @@ bool LoRaTransport::init() {
         Serial.printf("Output power explicitly set to %d dBm\n", m_config.txPower);
     }
     
-    // Configure PA (Power Amplifier) for SX1262 high power mode
-    // Parameters: paDutyCycle, hpMax, deviceSel (SX1262), paLut (PA optimal)
-    state = m_radio->setPaConfig(0x04, 0x07, 0x00, 0x01);
-    if (state != RADIOLIB_ERR_NONE) {
-        Serial.printf("Warning: setPaConfig failed: %d\n", state);
+    // Enable RX boosted gain for better sensitivity (SX1262 specific)
+    if (m_radio->setRxBoostedGainMode(true) != RADIOLIB_ERR_NONE) {
+        Serial.println("Warning: Failed to set RX boosted gain");
     } else {
-        Serial.println("PA configured for SX1262 (high power, +22 dBm)");
+        Serial.println("RX boosted gain enabled");
     }
 
     // Set Over Current Protection to 140mA (required for +22dBm)
@@ -351,12 +365,14 @@ void LoRaTransport::processReceive() {
         return;
     }
     
-    // Periodic diagnostic every 30 seconds
+    // Periodic diagnostic every 5 seconds
     static unsigned long lastDiag = 0;
     unsigned long now = millis();
-    if (now - lastDiag >= 30000) {
+    if (now - lastDiag >= 5000) {
         lastDiag = now;
-        Serial.println("[RX] Still polling... (no packets received)");
+        // getRSSI(false) returns instantaneous RSSI (noise floor) on SX126x
+        // getRSSI(true) or default returns the RSSI of the LAST received packet
+        Serial.printf("[RX] Polling... Instant RSSI: %.1f dBm\n", m_radio->getRSSI(false));
     }
     
     // Check if a packet was received by attempting to read
@@ -389,6 +405,9 @@ void LoRaTransport::processReceive() {
     } else if (state != RADIOLIB_ERR_RX_TIMEOUT) {
         // Actual error occurred (not just timeout)
         Serial.printf("LoRaTransport: read failed: %d\n", state);
+        if (state == RADIOLIB_ERR_CRC_MISMATCH) {
+             Serial.println("  (CRC Mismatch - signal detected but corrupted)");
+        }
         
         // Restart receive mode after error
         startReceive();

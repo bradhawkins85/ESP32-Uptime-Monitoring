@@ -53,8 +53,17 @@
 #endif
 
 // MeshCore LoRa PSK (Base64). Default is public group key; override for private channels.
+// If LORA_MESH_CHANNEL_NAME is set, PSK will be derived from name+secret instead.
 #ifndef MESH_LORA_CHANNEL_PSK_BASE64_VALUE
 #define MESH_LORA_CHANNEL_PSK_BASE64_VALUE "izOH6cXN6mrJ5e26oRXNcg=="
+#endif
+
+#ifndef LORA_MESH_CHANNEL_NAME_VALUE
+#define LORA_MESH_CHANNEL_NAME_VALUE ""  // Set to channel name to derive PSK (e.g., "MyPrivateChannel")
+#endif
+
+#ifndef LORA_MESH_CHANNEL_SECRET_VALUE
+#define LORA_MESH_CHANNEL_SECRET_VALUE ""  // Optional secret passphrase (e.g., "my-secret-key-2024")
 #endif
 
 #ifndef NTFY_SERVER_VALUE
@@ -176,6 +185,8 @@ const char* BLE_MESH_CHANNEL_NAME = BLE_MESH_CHANNEL_NAME_VALUE;
 const char* BLE_MESH_ROOM_SERVER_ID = BLE_MESH_ROOM_SERVER_ID_VALUE;
 const char* BLE_MESH_ROOM_SERVER_PASSWORD = BLE_MESH_ROOM_SERVER_PASSWORD_VALUE;
 const char* LORA_MESH_CHANNEL_PSK_BASE64 = MESH_LORA_CHANNEL_PSK_BASE64_VALUE;
+const char* LORA_MESH_CHANNEL_NAME = LORA_MESH_CHANNEL_NAME_VALUE;
+const char* LORA_MESH_CHANNEL_SECRET = LORA_MESH_CHANNEL_SECRET_VALUE;
 
 const char* NTFY_SERVER = NTFY_SERVER_VALUE;
 const char* NTFY_TOPIC = NTFY_TOPIC_VALUE;

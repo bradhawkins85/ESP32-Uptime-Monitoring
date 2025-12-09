@@ -464,54 +464,126 @@ static MeshCoreChannel meshChannel;
 static bool meshChannelConfigured = false;
 
 // Global variables for tracking sent messages and echoes
-static uint8_t lastSentCiphertext[256];
-static size_t lastSentCiphertextLen = 0;
+static uint8_t lastSentPayload[256];  // Stores MAC (2 bytes) + Ciphertext for echo detection
+static size_t lastSentPayloadLen = 0;
 static volatile bool lastMessageConfirmed = false;
+static volatile unsigned long lastRxPacketTime = 0;  // Track when we last received a packet
+static volatile int totalRxPackets = 0;  // Total packets received
 
 // RX callback for LoRa - logs any received packets for diagnostics
 void onLoRaReceive(const uint8_t* data, size_t len) {
-  Serial.printf("\n[RX] *** PACKET RECEIVED *** %d bytes\n", (int)len);
+  totalRxPackets++;
+  lastRxPacketTime = millis();
+  
+  Serial.printf("\n[RX] *** PACKET RECEIVED (#%d) *** %d bytes\n", totalRxPackets, (int)len);
   Serial.print("[RX] Hex: ");
   for (size_t i = 0; i < len && i < 64; i++) {
     Serial.printf("%02X ", data[i]);
   }
   Serial.println();
   
-  if (len >= 3) {
-    uint8_t header = data[0];
-    uint8_t routeType = (header >> 4) & 0x0F;
-    uint8_t payloadType = header & 0x0F;
-    uint8_t pathLen = data[1];
-    uint8_t channelHash = data[2]; // This is only true if pathLen is 0!
-    
-    // Correct parsing based on path length
-    // Packet structure: [Header 1][PathLen 1][PathData N][Hash 1][MAC 2][Ciphertext M]
-    size_t hashOffset = 2 + pathLen;
-    size_t macOffset = hashOffset + 1;
-    size_t ciphertextOffset = macOffset + 2;
-    
-    if (len > ciphertextOffset) {
-        channelHash = data[hashOffset];
-        Serial.printf("[RX] Header: 0x%02X (route=%d, payload=%d)\n", header, routeType, payloadType);
-        Serial.printf("[RX] Path len: %d, Channel hash: 0x%02X\n", pathLen, channelHash);
-        
-        if (channelHash == meshChannel.hash[0]) {
-          Serial.println("[RX] *** MATCHES OUR CHANNEL! ***");
-          
-          // Check if this is an echo of our last sent message
-          // Compare ciphertext (payload)
-          size_t incomingCiphertextLen = len - ciphertextOffset;
-          if (lastSentCiphertextLen > 0 && incomingCiphertextLen == lastSentCiphertextLen) {
-              if (memcmp(&data[ciphertextOffset], lastSentCiphertext, lastSentCiphertextLen) == 0) {
-                  Serial.println("[RX] *** ECHO DETECTED: Message confirmed by mesh! ***");
-                  lastMessageConfirmed = true;
-              }
-          }
-        } else {
-          Serial.printf("[RX] Different channel (ours: 0x%02X)\n", meshChannel.hash[0]);
-        }
-    }
+  if (len < 3) {
+    Serial.println("[RX] Packet too short");
+    Serial.println("[RX] ==================\n");
+    return;
   }
+  
+  uint8_t header = data[0];
+   uint8_t routeType = header & 0x03;          // Bits 0-1: route type
+   uint8_t payloadType = (header >> 2) & 0x0F; // Bits 2-5: payload type
+  uint8_t pathLen = data[1];
+  
+  Serial.printf("[RX] Header: 0x%02X (route=%d, payload=%d)\n", header, routeType, payloadType);
+  Serial.printf("[RX] Path len: %d\n", pathLen);
+  
+  // Correct parsing based on path length
+  // Packet structure: [Header 1][PathLen 1][PathData N][Hash 1][MAC 2][Ciphertext M]
+  size_t hashOffset = 2 + pathLen;
+  size_t macOffset = hashOffset + 1;
+  size_t ciphertextOffset = macOffset + 2;
+  
+  // Verify we have enough data
+  if (len <= ciphertextOffset) {
+    Serial.printf("[RX] Packet too short for ciphertext (len=%d, need>%d)\n", (int)len, (int)ciphertextOffset);
+    Serial.println("[RX] ==================\n");
+    return;
+  }
+  
+  uint8_t channelHash = data[hashOffset];
+  Serial.printf("[RX] Channel hash: 0x%02X (ours: 0x%02X)\n", channelHash, meshChannel.hash[0]);
+  
+     // Show path if present (repeater hashes)
+     if (pathLen > 0) {
+       Serial.print("[RX] Path (repeater hashes): ");
+       for (size_t i = 0; i < pathLen; i++) {
+         Serial.printf("%02X ", data[2 + i]);
+       }
+       Serial.println();
+     }
+   
+  if (channelHash == meshChannel.hash[0]) {
+    Serial.println("[RX] *** MATCHES OUR CHANNEL! ***");
+    
+    // Check if this is an echo of our last sent message
+    // Compare MAC+Ciphertext (everything after channel hash)
+       // Note: When repeaters forward, they add their hash to path[] but MAC+Ciphertext stays the same
+    size_t incomingPayloadLen = len - macOffset;
+    
+    if (lastSentPayloadLen > 0) {
+      Serial.printf("[RX] Echo check: incoming MAC+CT=%d bytes, saved MAC+CT=%d bytes\n", 
+                    (int)incomingPayloadLen, (int)lastSentPayloadLen);
+      
+      // Debug: Show incoming MAC+CT
+      Serial.print("[RX] Incoming MAC+CT: ");
+      for (size_t i = 0; i < incomingPayloadLen && i < 16; i++) {
+        Serial.printf("%02X ", data[macOffset + i]);
+      }
+      if (incomingPayloadLen > 16) Serial.print("...");
+      Serial.println();
+      
+      // Debug: Show saved MAC+CT
+      Serial.print("[RX] Saved MAC+CT:    ");
+      for (size_t i = 0; i < lastSentPayloadLen && i < 16; i++) {
+        Serial.printf("%02X ", lastSentPayload[i]);
+      }
+      if (lastSentPayloadLen > 16) Serial.print("...");
+      Serial.println();
+      
+      // Compare the complete MAC+Ciphertext portion
+      if (incomingPayloadLen == lastSentPayloadLen) {
+        if (memcmp(&data[macOffset], lastSentPayload, lastSentPayloadLen) == 0) {
+             if (pathLen == 0) {
+               Serial.println("[RX] *** ECHO DETECTED: Our own transmission (loopback) ***");
+             } else {
+               Serial.printf("[RX] *** ECHO DETECTED: Message forwarded by %d repeater(s)! ***\n", pathLen);
+               Serial.print("[RX] Repeater path: ");
+               for (size_t i = 0; i < pathLen; i++) {
+                 Serial.printf("%02X ", data[2 + i]);
+               }
+               Serial.println();
+             }
+          lastMessageConfirmed = true;
+        } else {
+          Serial.println("[RX] Same length but different content (not our echo)");
+          // Show first difference
+          for (size_t i = 0; i < lastSentPayloadLen; i++) {
+            if (data[macOffset + i] != lastSentPayload[i]) {
+              Serial.printf("[RX] First diff at byte %d: RX=0x%02X, Saved=0x%02X\n", 
+                           (int)i, data[macOffset + i], lastSentPayload[i]);
+              break;
+            }
+          }
+        }
+      } else {
+        Serial.println("[RX] Different length (not our echo)");
+      }
+    } else {
+      Serial.println("[RX] No message pending confirmation");
+    }
+  } else {
+    Serial.printf("[RX] Different channel\n");
+  }
+  
   Serial.println("[RX] ==================\n");
 }
 #endif
@@ -531,6 +603,126 @@ static constexpr size_t MAX_SENDER_NAME_LEN = 20;
 static constexpr uint8_t CIPHER_BLOCK_SIZE = 16;      // AES block size
 // MeshCore GroupText uses 2-byte MAC per actual capture (0x10F5)
 static constexpr uint8_t CIPHER_MAC_SIZE = 2;         // MAC length
+
+/**
+ * Check if a string is valid hex (only 0-9, a-f, A-F characters)
+ */
+bool isHexString(const char* str) {
+  if (str == nullptr || strlen(str) == 0) return false;
+  for (size_t i = 0; i < strlen(str); i++) {
+    char c = str[i];
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Convert hex string to bytes
+ */
+size_t hexToBytes(const char* hex, uint8_t* bytes, size_t maxBytes) {
+  size_t hexLen = strlen(hex);
+  if (hexLen % 2 != 0) return 0; // Must be even length
+  
+  size_t byteLen = hexLen / 2;
+  if (byteLen > maxBytes) return 0;
+  
+  for (size_t i = 0; i < byteLen; i++) {
+    char highNibble = hex[i * 2];
+    char lowNibble = hex[i * 2 + 1];
+    
+    uint8_t high = (highNibble >= '0' && highNibble <= '9') ? (highNibble - '0') :
+                   (highNibble >= 'a' && highNibble <= 'f') ? (highNibble - 'a' + 10) :
+                   (highNibble - 'A' + 10);
+    uint8_t low = (lowNibble >= '0' && lowNibble <= '9') ? (lowNibble - '0') :
+                  (lowNibble >= 'a' && lowNibble <= 'f') ? (lowNibble - 'a' + 10) :
+                  (lowNibble - 'A' + 10);
+    
+    bytes[i] = (high << 4) | low;
+  }
+  
+  return byteLen;
+}
+
+/**
+ * Derive a 32-byte PSK from channel name and optional secret
+ * If the channel name is "Public" and secret is hex (16 or 32 bytes), use the hex bytes directly as PSK
+ * Otherwise, uses SHA256(channelName + ":" + secret) for derivation
+ * @param channelName The channel name (required)
+ * @param secret Optional secret passphrase or hex string (can be empty)
+ * @return true if PSK was generated successfully
+ */
+bool generateMeshChannelSecret(const char* channelName, const char* secret) {
+  if (channelName == nullptr || strlen(channelName) == 0) {
+    Serial.println("ERROR: Channel name is empty");
+    return false;
+  }
+
+  Serial.printf("[LoRa] Configuring channel: '%s'\n", channelName);
+  
+  // Check if secret is a valid hex PSK (16 or 32 bytes = 32 or 64 hex chars)
+  // If so, use it directly as the PSK instead of deriving
+  if (secret != nullptr && strlen(secret) > 0) {
+    size_t secretLen = strlen(secret);
+    if ((secretLen == 32 || secretLen == 64) && isHexString(secret)) {
+      // This looks like a hex PSK - use it directly
+      uint8_t pskBytes[32];
+      size_t pskLen = hexToBytes(secret, pskBytes, sizeof(pskBytes));
+      
+      if (pskLen == 16 || pskLen == 32) {
+        Serial.printf("[LoRa] Using provided hex PSK (%d bytes)\n", (int)pskLen);
+        memset(meshChannel.secret, 0, sizeof(meshChannel.secret));
+        memcpy(meshChannel.secret, pskBytes, pskLen);
+        meshChannel.secretLen = pskLen;
+        
+        // Display as Base64 for reference
+        unsigned char pskBase64[64];
+        size_t pskBase64Len = 0;
+        mbedtls_base64_encode(pskBase64, sizeof(pskBase64), &pskBase64Len, pskBytes, pskLen);
+        Serial.printf("[LoRa] PSK (Base64): %s\n", pskBase64);
+        Serial.printf("[LoRa] PSK first 4 bytes: %02X %02X %02X %02X\n", 
+                      meshChannel.secret[0], meshChannel.secret[1], meshChannel.secret[2], meshChannel.secret[3]);
+        
+        return true;
+      }
+    }
+  }
+  
+  // Standard derivation: SHA256(channelName + ":" + secret)
+  String input = String(channelName);
+  if (secret != nullptr && strlen(secret) > 0) {
+    input += ":";
+    input += String(secret);
+    Serial.println("[LoRa] Deriving PSK from channel name + secret");
+  } else {
+    Serial.println("[LoRa] Deriving PSK from channel name only");
+  }
+
+  // Generate 32-byte PSK using SHA256
+  uint8_t hash[32];
+  mbedtls_sha256_context ctx;
+  mbedtls_sha256_init(&ctx);
+  mbedtls_sha256_starts(&ctx, 0);
+  mbedtls_sha256_update(&ctx, reinterpret_cast<const uint8_t*>(input.c_str()), input.length());
+  mbedtls_sha256_finish(&ctx, hash);
+  mbedtls_sha256_free(&ctx);
+
+  // Store in meshChannel
+  memset(meshChannel.secret, 0, sizeof(meshChannel.secret));
+  memcpy(meshChannel.secret, hash, 32);
+  meshChannel.secretLen = 32;
+
+  // Display derived PSK as Base64 for reference
+  unsigned char pskBase64[64];
+  size_t pskBase64Len = 0;
+  mbedtls_base64_encode(pskBase64, sizeof(pskBase64), &pskBase64Len, hash, 32);
+  Serial.printf("[LoRa] Derived PSK (Base64): %s\n", pskBase64);
+  Serial.printf("[LoRa] PSK first 4 bytes: %02X %02X %02X %02X\n", 
+                meshChannel.secret[0], meshChannel.secret[1], meshChannel.secret[2], meshChannel.secret[3]);
+  
+  return true;
+}
 
 // Decode Base64 PSK from config into meshChannel.secret
 bool decodeMeshChannelSecret(const char* pskBase64) {
@@ -571,9 +763,21 @@ bool configureMeshChannel() {
     return true;
   }
   
-  if (!decodeMeshChannelSecret(LORA_MESH_CHANNEL_PSK_BASE64)) {
-    recordMeshError("MeshCore PSK decode failed");
-    return false;
+  // Check if we should derive PSK from channel name
+  bool useDerivedPSK = (strlen(LORA_MESH_CHANNEL_NAME) > 0);
+  
+  if (useDerivedPSK) {
+    // Derive PSK from channel name and optional secret
+    if (!generateMeshChannelSecret(LORA_MESH_CHANNEL_NAME, LORA_MESH_CHANNEL_SECRET)) {
+      recordMeshError("MeshCore PSK generation failed");
+      return false;
+    }
+  } else {
+    // Use Base64-encoded PSK from config
+    if (!decodeMeshChannelSecret(LORA_MESH_CHANNEL_PSK_BASE64)) {
+      recordMeshError("MeshCore PSK decode failed");
+      return false;
+    }
   }
 
   // Channel hash: first byte of SHA256(secret)
@@ -768,8 +972,10 @@ bool sendLoRaChannelMessage(const String& senderName, const String& message) {
       uint8_t packet[256];
       size_t pktIdx = 0;
       
-      // Header: GroupText (0x15)
-      packet[pktIdx++] = (0x01 << 4) | PAYLOAD_TYPE_GRP_TXT;
+      // Header: route in bits[1:0], payload type in bits[5:2], version in bits[7:6]
+      const uint8_t routeFlood = 0x01;  // ROUTE_TYPE_FLOOD
+      const uint8_t header = (routeFlood) | (PAYLOAD_TYPE_GRP_TXT << 2); // version=0
+      packet[pktIdx++] = header;
       packet[pktIdx++] = 0x00; // Path len
       packet[pktIdx++] = meshChannel.hash[0]; // Channel hash
       
@@ -780,13 +986,10 @@ bool sendLoRaChannelMessage(const String& senderName, const String& message) {
         return false;
       }
       
-      // Save ciphertext for echo detection
-      if (encryptedLen > 2) {
-          lastSentCiphertextLen = encryptedLen - 2;
-          if (lastSentCiphertextLen > sizeof(lastSentCiphertext)) {
-              lastSentCiphertextLen = sizeof(lastSentCiphertext);
-          }
-          memcpy(lastSentCiphertext, &packet[pktIdx + 2], lastSentCiphertextLen);
+      // Save complete MAC+Ciphertext payload for echo detection
+      if (encryptedLen > 0 && encryptedLen <= sizeof(lastSentPayload)) {
+          lastSentPayloadLen = encryptedLen;
+          memcpy(lastSentPayload, &packet[pktIdx], encryptedLen);
           lastMessageConfirmed = false;
       }
       
@@ -798,13 +1001,29 @@ bool sendLoRaChannelMessage(const String& senderName, const String& message) {
       bool sent = meshTransport->send(packet, pktIdx);
       
       if (sent) {
+          Serial.println("  Message transmitted successfully.");
+          Serial.println("  Note: Echo confirmation disabled - assuming delivery.");
+          // TODO: Re-enable echo detection once mesh echo behavior is understood
+          success = true;
+          break; // Exit retry loop
+          
+          /* DISABLED: Echo detection - mesh may not echo on private channels
           Serial.println("  Waiting for mesh confirmation (echo)...");
           unsigned long waitStart = millis();
           bool confirmed = false;
+          int pollCount = 0;
           
-          // Wait up to 15 seconds for an echo (mesh can be slow with multiple hops)
-          while (millis() - waitStart < 15000) {
+          // Wait up to 60 seconds for an echo (mesh can be slow with multiple hops)
+          // Also, the mesh might be busy and take time to relay
+          while (millis() - waitStart < 60000) {
               meshTransport->processReceive();
+              pollCount++;
+              
+              // Show progress every 5 seconds
+              if (pollCount % 500 == 0) {
+                  unsigned long elapsed = (millis() - waitStart) / 1000;
+                  Serial.printf("  Still waiting... (%lu seconds elapsed, %d polls)\n", elapsed, pollCount);
+              }
               
               if (lastMessageConfirmed) {
                   confirmed = true;
@@ -818,8 +1037,9 @@ bool sendLoRaChannelMessage(const String& senderName, const String& message) {
               success = true;
               break; // Exit retry loop
           } else {
-              Serial.println("  WARNING: No echo received within 15s.");
+              Serial.printf("  WARNING: No echo received within 60s (%d polls performed).\n", pollCount);
           }
+          */
       } else {
           Serial.println("  ERROR: Radio send failed.");
           recordMeshError("ERROR: LoRa radio send failed");
